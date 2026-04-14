@@ -13,20 +13,15 @@ import {
 import { useStore } from '../store';
 import { saveProject, isFirebaseReady } from '../lib/firebase';
 import { exportProject } from '../lib/zipExport';
-import AIPanel from '../components/AIPanel';
 import PreviewPanel from '../components/PreviewPanel';
 import ConsolePanel from '../components/ConsolePanel';
 import ShareModal from '../components/ShareModal';
 import CommandPalette from '../components/CommandPalette';
 import Notifications from '../components/Notifications';
+import FileExplorer from '../components/FileExplorer';
+import AIFloatingPanel from '../components/AIFloatingPanel';
 
 const MonacoEditor = lazy(() => import('@monaco-editor/react'));
-
-const FILE_TABS = [
-  { id: 'html', label: 'HTML', icon: FileText, language: 'html', color: '#e34c26' },
-  { id: 'css', label: 'CSS', icon: FileCode, language: 'css', color: '#264de4' },
-  { id: 'js', label: 'JS', icon: Braces, language: 'javascript', color: '#f7df1e' },
-];
 
 const MONACO_OPTIONS = {
   fontSize: 13,
@@ -39,7 +34,6 @@ const MONACO_OPTIONS = {
   padding: { top: 16, bottom: 16 },
   tabSize: 2,
   wordWrap: 'on',
-  theme: 'webide-dark',
   smoothScrolling: true,
   cursorBlinking: 'smooth',
   cursorSmoothCaretAnimation: 'on',
@@ -97,28 +91,31 @@ export default function Editor() {
   const [searchParams] = useSearchParams();
   const {
     user, project, setProject, updateCode, updateTitle,
-    activeTab, setActiveTab, isDirty, setDirty, notify, consoleLogs
+    activeTab, setActiveTab, isDirty, setDirty, notify, consoleLogs,
+    files, activeFileId, setActiveFileId, updateFileContent,
   } = useStore();
 
   const [saving, setSaving] = useState(false);
   const [showShare, setShowShare] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [showConsole, setShowConsole] = useState(false);
-  const [showAI, setShowAI] = useState(true);
+  const [showAI, setShowAI] = useState(false);
   const [showPreview, setShowPreview] = useState(true);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(project.title);
   const titleRef = useRef(null);
   const editorRef = useRef(null);
 
-  // Load shared project from URL
+  const activeFile = files.find(f => f.id === activeFileId);
+
+  // Load shared project
   useEffect(() => {
     const shareParam = searchParams.get('share');
     if (shareParam) {
       try {
         const decoded = JSON.parse(decodeURIComponent(atob(shareParam)));
         setProject({ ...decoded, id: null });
-        notify('Shared project loaded (read-only link)', 'info');
+        notify('Shared project loaded', 'info');
       } catch {
         notify('Invalid share link', 'error');
       }
@@ -131,21 +128,18 @@ export default function Editor() {
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key === 's') { e.preventDefault(); handleSave(); }
       if (mod && e.key === 'k') { e.preventDefault(); setShowPalette(p => !p); }
-      if (mod && e.key === 'Enter') { e.preventDefault(); /* preview refresh */ }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [project]);
+  }, [project, files]);
 
-  // Track dirty state
-  useEffect(() => { setDirty(true); }, [project.html, project.css, project.js]);
+  useEffect(() => { setDirty(true); }, [files]);
 
   const handleSave = useCallback(async () => {
     if (saving) return;
     if (!user || user.isGuest) {
-      // Save to localStorage
       localStorage.setItem('last_project', JSON.stringify(project));
-      notify('Saved locally (sign in to cloud save)', 'info');
+      notify('Saved locally', 'info');
       setDirty(false);
       return;
     }
@@ -183,21 +177,29 @@ export default function Editor() {
     else setTitleDraft(project.title);
   };
 
-  const activeFile = FILE_TABS.find(t => t.id === activeTab);
+  // Build preview from files
+  const getPreviewContent = () => {
+    const htmlFile = files.find(f => f.name.endsWith('.html') || f.name.endsWith('.htm'));
+    const cssFile = files.find(f => f.name.endsWith('.css'));
+    const jsFile = files.find(f => f.name.endsWith('.js') || f.name.endsWith('.jsx'));
+    return {
+      html: htmlFile?.content || '',
+      css: cssFile?.content || '',
+      js: jsFile?.content || '',
+    };
+  };
 
   const commandActions = [
     { icon: Save, label: 'Save Project', description: 'Save to cloud', shortcut: '⌘S', fn: handleSave },
     { icon: Download, label: 'Export as ZIP', description: 'Download project files', fn: handleExport },
     { icon: Share2, label: 'Share Project', description: 'Get shareable link', fn: () => setShowShare(true) },
     { icon: Eye, label: 'Toggle Preview', fn: () => setShowPreview(p => !p) },
-    { icon: Sparkles, label: 'Toggle AI Panel', fn: () => setShowAI(p => !p) },
+    { icon: Sparkles, label: 'Toggle AI Assistant', fn: () => setShowAI(p => !p) },
     { icon: Terminal, label: 'Toggle Console', fn: () => setShowConsole(p => !p) },
     { icon: LayoutGrid, label: 'Go to Dashboard', fn: () => nav('/dashboard') },
-    ...FILE_TABS.map(t => ({
-      icon: t.icon, label: `Switch to ${t.label}`,
-      fn: () => setActiveTab(t.id),
-    })),
   ];
+
+  const previewContent = getPreviewContent();
 
   return (
     <div className="h-screen flex flex-col bg-bg overflow-hidden">
@@ -224,7 +226,10 @@ export default function Editor() {
               value={titleDraft}
               onChange={e => setTitleDraft(e.target.value)}
               onBlur={handleTitleBlur}
-              onKeyDown={e => { if (e.key === 'Enter') titleRef.current?.blur(); if (e.key === 'Escape') { setTitleDraft(project.title); setEditingTitle(false); } }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') titleRef.current?.blur();
+                if (e.key === 'Escape') { setTitleDraft(project.title); setEditingTitle(false); }
+              }}
               autoFocus
               className="bg-transparent border-b border-border text-sm font-medium focus:outline-none focus:border-white text-white min-w-0 w-40"
             />
@@ -237,24 +242,6 @@ export default function Editor() {
             </button>
           )}
           {isDirty && <div className="w-1.5 h-1.5 rounded-full bg-orange-400 shrink-0" title="Unsaved changes" />}
-        </div>
-
-        {/* Center - File tabs */}
-        <div className="flex items-center gap-1 mx-auto">
-          {FILE_TABS.map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-mono font-medium transition-all ${
-                activeTab === tab.id
-                  ? 'bg-white/10 text-white'
-                  : 'text-muted hover:text-white hover:bg-white/5'
-              }`}
-            >
-              <div className="w-1.5 h-1.5 rounded-full" style={{ background: activeTab === tab.id ? tab.color : '#444' }} />
-              {tab.label}
-            </button>
-          ))}
         </div>
 
         {/* Right actions */}
@@ -272,17 +259,15 @@ export default function Editor() {
             title="Console"
           >
             <Terminal size={14} />
-            {consoleLogs.filter(l => l.level === 'error').length > 0 && (
-              <span className="absolute top-2 right-2 w-1.5 h-1.5 bg-red-400 rounded-full" />
-            )}
           </button>
 
           <button
             onClick={() => setShowAI(p => !p)}
-            className={`p-2 rounded-lg transition-colors ${showAI ? 'text-white bg-white/10' : 'text-muted hover:text-white'}`}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors ${showAI ? 'bg-white text-black' : 'text-muted hover:text-white border border-border'}`}
             title="AI Assistant"
           >
-            <Sparkles size={14} />
+            <Sparkles size={13} />
+            AI
           </button>
 
           <button
@@ -298,7 +283,6 @@ export default function Editor() {
           <button
             onClick={handleExport}
             className="flex items-center gap-1.5 border border-border text-muted hover:text-white hover:border-border-light transition-colors text-xs px-3 py-1.5 rounded-lg"
-            title="Export ZIP"
           >
             <Download size={13} /> Export
           </button>
@@ -321,58 +305,68 @@ export default function Editor() {
         </div>
       </header>
 
-      {/* Main panels */}
-      <div className="flex-1 overflow-hidden">
-        <PanelGroup direction="horizontal" className="h-full">
-          {/* Editor */}
-          <Panel defaultSize={showPreview ? (showAI ? 40 : 55) : 70} minSize={20}>
-            <PanelGroup direction="vertical" className="h-full">
-              <Panel defaultSize={showConsole ? 70 : 100} minSize={30}>
-                <Suspense fallback={<EditorSkeleton />}>
-                  <MonacoEditor
-                    height="100%"
-                    language={activeFile?.language || 'html'}
-                    value={project[activeTab]}
-                    onChange={(val) => { updateCode(activeTab, val || ''); }}
-                    beforeMount={defineTheme}
-                    onMount={(editor) => { editorRef.current = editor; }}
-                    options={MONACO_OPTIONS}
+      {/* Main area */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* File Explorer sidebar */}
+        <FileExplorer />
+
+        {/* Editor + Preview */}
+        <div className="flex-1 overflow-hidden">
+          <PanelGroup direction="horizontal" className="h-full">
+            {/* Editor */}
+            <Panel defaultSize={showPreview ? 55 : 100} minSize={20}>
+              <PanelGroup direction="vertical" className="h-full">
+                <Panel defaultSize={showConsole ? 70 : 100} minSize={30}>
+                  {activeFile ? (
+                    <Suspense fallback={<EditorSkeleton />}>
+                      <MonacoEditor
+                        key={activeFile.id}
+                        height="100%"
+                        language={activeFile.language}
+                        value={activeFile.content}
+                        onChange={(val) => updateFileContent(activeFile.id, val || '')}
+                        beforeMount={defineTheme}
+                        onMount={(editor) => { editorRef.current = editor; }}
+                        options={{ ...MONACO_OPTIONS, theme: 'webide-dark' }}
+                      />
+                    </Suspense>
+                  ) : (
+                    <div className="h-full bg-[#0d0d0d] flex items-center justify-center text-muted text-sm">
+                      No file selected
+                    </div>
+                  )}
+                </Panel>
+
+                {showConsole && (
+                  <>
+                    <PanelResizeHandle className="h-px bg-border hover:bg-white/20 transition-colors cursor-row-resize" />
+                    <Panel defaultSize={30} minSize={10} maxSize={50}>
+                      <ConsolePanel />
+                    </Panel>
+                  </>
+                )}
+              </PanelGroup>
+            </Panel>
+
+            {/* Preview */}
+            {showPreview && (
+              <>
+                <PanelResizeHandle className="w-px bg-border hover:bg-white/20 transition-colors cursor-col-resize" />
+                <Panel defaultSize={45} minSize={20}>
+                  <PreviewPanel
+                    html={previewContent.html}
+                    css={previewContent.css}
+                    js={previewContent.js}
                   />
-                </Suspense>
-              </Panel>
-
-              {showConsole && (
-                <>
-                  <PanelResizeHandle className="h-px bg-border hover:bg-white/20 transition-colors cursor-row-resize" />
-                  <Panel defaultSize={30} minSize={10} maxSize={50}>
-                    <ConsolePanel />
-                  </Panel>
-                </>
-              )}
-            </PanelGroup>
-          </Panel>
-
-          {/* Preview */}
-          {showPreview && (
-            <>
-              <PanelResizeHandle className="w-px bg-border hover:bg-white/20 transition-colors cursor-col-resize" />
-              <Panel defaultSize={showAI ? 35 : 45} minSize={20}>
-                <PreviewPanel />
-              </Panel>
-            </>
-          )}
-
-          {/* AI Panel */}
-          {showAI && (
-            <>
-              <PanelResizeHandle className="w-px bg-border hover:bg-white/20 transition-colors cursor-col-resize" />
-              <Panel defaultSize={25} minSize={18} maxSize={40}>
-                <AIPanel />
-              </Panel>
-            </>
-          )}
-        </PanelGroup>
+                </Panel>
+              </>
+            )}
+          </PanelGroup>
+        </div>
       </div>
+
+      {/* Floating AI Panel */}
+      {showAI && <AIFloatingPanel onClose={() => setShowAI(false)} />}
 
       {/* Modals */}
       <AnimatePresence>
