@@ -1,5 +1,13 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import {
+  getAuth,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signOut,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  updateProfile,
+} from 'firebase/auth';
 import {
   getFirestore,
   collection,
@@ -15,8 +23,6 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 
-// Users configure their own Firebase project
-// Config is stored in localStorage for simplicity
 const getFirebaseConfig = () => {
   const stored = localStorage.getItem('firebase_config');
   if (stored) {
@@ -40,7 +46,6 @@ export const initFirebase = (config) => {
   }
 };
 
-// Auto-init if config exists
 const savedConfig = getFirebaseConfig();
 if (savedConfig) {
   try { initFirebase(savedConfig); } catch { /* */ }
@@ -55,12 +60,23 @@ export const signInWithGoogle = async () => {
   return signInWithPopup(auth, provider);
 };
 
+export const signInWithEmail = async (email, password) => {
+  if (!auth) throw new Error('Firebase not initialized');
+  return signInWithEmailAndPassword(auth, email, password);
+};
+
+export const signUpWithEmail = async (email, password, displayName) => {
+  if (!auth) throw new Error('Firebase not initialized');
+  const result = await createUserWithEmailAndPassword(auth, email, password);
+  await updateProfile(result.user, { displayName });
+  return result;
+};
+
 export const signOutUser = async () => {
   if (!auth) return;
   return signOut(auth);
 };
 
-// Project CRUD
 export const saveProject = async (project) => {
   if (!db) throw new Error('Firebase not initialized');
   const { id, ...data } = project;
