@@ -1,13 +1,17 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { RefreshCw, ExternalLink, Monitor, Smartphone } from 'lucide-react';
 import { useStore } from '../store';
 
-function buildSrcDoc(html, css, js) {
+function buildSrcDoc(html, css, js, parentOrigin) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'none'; img-src data: blob: https: http:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data: https: http:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none';"
+  />
   <style>${css}</style>
 </head>
 <body>
@@ -17,10 +21,11 @@ ${html}
 const _log = console.log;
 const _warn = console.warn;
 const _error = console.error;
+const PARENT_ORIGIN = ${JSON.stringify(parentOrigin)};
 const send = (level, args) => {
   window.parent.postMessage({ type: 'console', level, content: args.map(a => {
     try { return typeof a === 'object' ? JSON.stringify(a) : String(a); } catch { return '[Object]'; }
-  }).join(' ') }, '*');
+  }).join(' ') }, PARENT_ORIGIN);
 };
 console.log = (...a) => { _log(...a); send('log', a); };
 console.warn = (...a) => { _warn(...a); send('warn', a); };
@@ -41,19 +46,21 @@ export default function PreviewPanel() {
   const [srcDoc, setSrcDoc] = useState('');
   const [mobile, setMobile] = useState(false);
   const debounceRef = useRef(null);
+  const parentOrigin = window.location.origin;
 
   // Debounced update
   useEffect(() => {
     clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      setSrcDoc(buildSrcDoc(project.html, project.css, project.js));
+      setSrcDoc(buildSrcDoc(project.html, project.css, project.js, parentOrigin));
     }, 400);
     return () => clearTimeout(debounceRef.current);
-  }, [project.html, project.css, project.js]);
+  }, [project.html, project.css, project.js, parentOrigin]);
 
   // Listen for console messages from iframe
   useEffect(() => {
     const handler = (e) => {
+      if (!iframeRef.current?.contentWindow || e.source !== iframeRef.current.contentWindow) return;
       if (e.data?.type === 'console') {
         addLog({ level: e.data.level, content: e.data.content, ts: Date.now() });
       }
@@ -64,11 +71,11 @@ export default function PreviewPanel() {
 
   const refresh = () => {
     setSrcDoc('');
-    setTimeout(() => setSrcDoc(buildSrcDoc(project.html, project.css, project.js)), 50);
+    setTimeout(() => setSrcDoc(buildSrcDoc(project.html, project.css, project.js, parentOrigin)), 50);
   };
 
   const openInTab = () => {
-    const blob = new Blob([buildSrcDoc(project.html, project.css, project.js)], { type: 'text/html' });
+    const blob = new Blob([buildSrcDoc(project.html, project.css, project.js, parentOrigin)], { type: 'text/html' });
     window.open(URL.createObjectURL(blob), '_blank');
   };
 
@@ -107,7 +114,8 @@ export default function PreviewPanel() {
             ref={iframeRef}
             srcDoc={srcDoc}
             title="preview"
-            sandbox="allow-scripts allow-modals allow-forms allow-same-origin"
+            sandbox="allow-scripts allow-modals"
+            referrerPolicy="no-referrer"
             className="w-full h-full border-0 bg-white"
             style={{ minHeight: '100%' }}
           />
