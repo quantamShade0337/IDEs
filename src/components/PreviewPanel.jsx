@@ -10,26 +10,38 @@ function buildSrcDoc(html, css, js, parentOrigin) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta
     http-equiv="Content-Security-Policy"
-    content="default-src 'none'; img-src data: blob: https: http:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data: https: http:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none';"
+    content="default-src 'none'; img-src data: blob: https:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data: https:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'; media-src 'none'; manifest-src 'none'; worker-src 'none';"
   />
   <style>${css}</style>
 </head>
 <body>
 ${html}
 <script>
-// Intercept console
+// Strict sandbox communication - only allow logging
 const _log = console.log;
 const _warn = console.warn;
 const _error = console.error;
 const PARENT_ORIGIN = ${JSON.stringify(parentOrigin)};
+
+// Prevent access to parent window
+try {
+  Object.defineProperty(window, 'parent', { value: window, writable: false });
+  Object.defineProperty(window, 'top', { value: window, writable: false });
+  Object.defineProperty(window, 'opener', { value: null, writable: false });
+} catch (e) {}
+
 const send = (level, args) => {
-  window.parent.postMessage({ type: 'console', level, content: args.map(a => {
-    try { return typeof a === 'object' ? JSON.stringify(a) : String(a); } catch { return '[Object]'; }
-  }).join(' ') }, PARENT_ORIGIN);
+  try {
+    window.parent.postMessage({ type: 'console', level, content: args.map(a => {
+      try { return typeof a === 'object' ? JSON.stringify(a) : String(a); } catch { return '[Object]'; }
+    }).join(' ') }, PARENT_ORIGIN);
+  } catch (e) {}
 };
+
 console.log = (...a) => { _log(...a); send('log', a); };
 console.warn = (...a) => { _warn(...a); send('warn', a); };
 console.error = (...a) => { _error(...a); send('error', a); };
+
 window.onerror = (msg, src, line, col, err) => {
   send('error', [\`\${msg} (line \${line})\`]);
   return false;
@@ -57,17 +69,18 @@ export default function PreviewPanel() {
     return () => clearTimeout(debounceRef.current);
   }, [project.html, project.css, project.js, parentOrigin]);
 
-  // Listen for console messages from iframe
+  // Listen for console messages from iframe - strict origin verification
   useEffect(() => {
     const handler = (e) => {
       if (!iframeRef.current?.contentWindow || e.source !== iframeRef.current.contentWindow) return;
-      if (e.data?.type === 'console') {
-        addLog({ level: e.data.level, content: e.data.content, ts: Date.now() });
-      }
+      if (e.origin !== parentOrigin) return;
+      if (e.data?.type !== 'console') return;
+      if (!e.data?.level || !e.data?.content) return;
+      addLog({ level: e.data.level, content: e.data.content, ts: Date.now() });
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, [addLog]);
+  }, [addLog, parentOrigin]);
 
   const refresh = () => {
     setSrcDoc('');
@@ -114,7 +127,7 @@ export default function PreviewPanel() {
             ref={iframeRef}
             srcDoc={srcDoc}
             title="preview"
-            sandbox="allow-scripts allow-modals"
+            sandbox="allow-scripts"
             referrerPolicy="no-referrer"
             className="w-full h-full border-0 bg-white"
             style={{ minHeight: '100%' }}
