@@ -7,6 +7,14 @@ import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   updateProfile,
+  updateEmail,
+  updatePassword,
+  sendEmailVerification,
+  reauthenticateWithCredential,
+  reauthenticateWithPopup,
+  EmailAuthProvider,
+  linkWithPopup,
+  deleteUser,
 } from 'firebase/auth';
 import {
   getFirestore,
@@ -18,9 +26,9 @@ import {
   doc,
   getDocs,
   getDoc,
+  onSnapshot,
   query,
   where,
-  orderBy,
   serverTimestamp,
 } from 'firebase/firestore';
 
@@ -134,13 +142,36 @@ export const saveProject = async (project) => {
 
 export const loadProjects = async (userId) => {
   if (!db) return [];
+  // Only filter by userId — no orderBy to avoid needing a composite index.
+  // Sort client-side by updatedAt descending.
   const q = query(
     collection(db, 'projects'),
-    where('userId', '==', userId),
-    orderBy('updatedAt', 'desc')
+    where('userId', '==', userId)
   );
   const snap = await getDocs(q);
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  return snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => {
+      const ta = a.updatedAt?.toMillis?.() ?? a.updatedAt ?? 0;
+      const tb = b.updatedAt?.toMillis?.() ?? b.updatedAt ?? 0;
+      return tb - ta;
+    });
+};
+
+// Real-time listener — calls callback immediately and on every change
+export const subscribeProjects = (userId, callback) => {
+  if (!db) { callback([]); return () => {}; }
+  const q = query(collection(db, 'projects'), where('userId', '==', userId));
+  return onSnapshot(q, (snap) => {
+    const projects = snap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => {
+        const ta = a.updatedAt?.toMillis?.() ?? 0;
+        const tb = b.updatedAt?.toMillis?.() ?? 0;
+        return tb - ta;
+      });
+    callback(projects);
+  }, () => callback([]));
 };
 
 export const loadProject = async (id) => {
@@ -166,3 +197,133 @@ export const deleteProject = async (id) => {
 };
 
 export const isFirebaseReady = () => !!app && !!auth && !!db;
+
+// ── Account management ────────────────────────────────────────────────────────
+
+export const updateDisplayName = async (displayName) => {
+  if (!auth?.currentUser) throw new Error('Not signed in');
+  await updateProfile(auth.currentUser, { displayName });
+};
+
+export const sendVerificationEmail = async () => {
+  if (!auth?.currentUser) throw new Error('Not signed in');
+  await sendEmailVerification(auth.currentUser);
+};
+
+export const reauthWithPassword = async (password) => {
+  const user = auth?.currentUser;
+  if (!user) throw new Error('Not signed in');
+  const credential = EmailAuthProvider.credential(user.email, password);
+  await reauthenticateWithCredential(user, credential);
+};
+
+export const reauthWithGoogle = async () => {
+  if (!auth?.currentUser) throw new Error('Not signed in');
+  const provider = new GoogleAuthProvider();
+  await reauthenticateWithPopup(auth.currentUser, provider);
+};
+
+export const changePassword = async (currentPassword, newPassword) => {
+  await reauthWithPassword(currentPassword);
+  await updatePassword(auth.currentUser, newPassword);
+};
+
+export const linkGoogleAccount = async () => {
+  if (!auth?.currentUser) throw new Error('Not signed in');
+  const provider = new GoogleAuthProvider();
+  return linkWithPopup(auth.currentUser, provider);
+};
+
+export const isGoogleLinked = () => {
+  const user = auth?.currentUser;
+  if (!user) return false;
+  return user.providerData.some(p => p.providerId === 'google.com');
+};
+
+export const isEmailProvider = () => {
+  const user = auth?.currentUser;
+  if (!user) return false;
+  return user.providerData.some(p => p.providerId === 'password');
+};
+
+// Passkey (WebAuthn) — registration
+export const registerPasskey = async () => {
+  if (!window.PublicKeyCredential) throw new Error('Passkeys not supported in this browser');
+  const user = auth?.currentUser;
+  if (!user) throw new Error('Not signed in');
+
+  // Generate a challenge — in production this should come from your server.
+  // For a fully client-side app without a backend, we generate one locally and
+  // store the credential ID in localStorage (best-effort, no server verification).
+  const challenge = crypto.getRandomValues(new Uint8Array(32));
+  const userId = new TextEncoder().encode(user.uid);
+
+  const credential = await navigator.credentials.create({
+    publicKey: {
+      challenge,
+      rp: { name: 'WebIDE', id: window.location.hostname },
+      user: {
+        id: userId,
+        name: user.email || user.uid,
+        displayName: user.displayName || user.email || 'User',
+      },
+      pubKeyCredParams: [
+        { type: 'public-key', alg: -7 },   // ES256
+        { type: 'public-key', alg: -257 },  // RS256
+      ],
+      authenticatorSelection: {
+        authenticatorAttachment: 'platform',
+        userVerification: 'required',
+        residentKey: 'required',
+      },
+      timeout: 60000,
+    },
+  });
+
+  // Persist credential ID so we can list it later
+  const stored = JSON.parse(localStorage.getItem('passkey_ids') || '[]');
+  const credId = btoa(String.fromCharCode(...new Uint8Array(credential.rawId)));
+  const entry = {
+    id: credId,
+    name: `Passkey — ${new Date().toLocaleDateString()}`,
+    createdAt: Date.now(),
+  };
+  stored.push(entry);
+  localStorage.setItem('passkey_ids', JSON.stringify(stored));
+  return entry;
+};
+
+export const getPasskeys = () => {
+  try {
+    return JSON.parse(localStorage.getItem('passkey_ids') || '[]');
+  } catch {
+    return [];
+  }
+};
+
+export const removePasskey = (credId) => {
+  const stored = getPasskeys().filter(p => p.id !== credId);
+  localStorage.setItem('passkey_ids', JSON.stringify(stored));
+};
+
+export const deleteAccount = async (password) => {
+  const user = auth?.currentUser;
+  if (!user) throw new Error('Not signed in');
+  // Re-authenticate first
+  if (isEmailProvider() && password) {
+    await reauthWithPassword(password);
+  } else {
+    await reauthWithGoogle();
+  }
+  // Delete Firestore projects
+  if (db) {
+    try {
+      const { getDocs: _getDocs, collection: _col, deleteDoc: _del, doc: _doc } = await import('firebase/firestore');
+      const snap = await _getDocs(_col(db, 'projects'));
+      const mine = snap.docs.filter(d => d.data().userId === user.uid);
+      await Promise.all(mine.map(d => _del(_doc(db, 'projects', d.id))));
+    } catch { /* best-effort */ }
+  }
+  await deleteUser(user);
+  localStorage.removeItem('passkey_ids');
+};

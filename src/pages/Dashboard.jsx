@@ -3,10 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plus, Code2, Trash2, Copy, Clock, LogOut, User,
-  FolderOpen, Search, X, Settings, ExternalLink,
-  Layers, FileCode, Globe, Zap, Grid3X3,
+  FolderOpen, Search, X, FileCode, Globe, Zap, Grid3X3,
 } from 'lucide-react';
-import { loadProjects, deleteProject, saveProject, signOutUser } from '../lib/firebase';
+import { subscribeProjects, loadProject, deleteProject, saveProject, signOutUser, isFirebaseReady } from '../lib/firebase';
 import { useStore } from '../store';
 
 function timeAgo(ts) {
@@ -107,10 +106,12 @@ export default function Dashboard() {
   useEffect(() => {
     if (!user) { nav('/auth'); return; }
     if (user.isGuest) { setLoading(false); return; }
-    loadProjects(user.uid).then(p => {
+    // Real-time listener — updates dashboard whenever a project is saved or deleted
+    const unsub = subscribeProjects(user.uid, (p) => {
       setProjects(p);
       setLoading(false);
-    }).catch(() => setLoading(false));
+    });
+    return unsub;
   }, [user]);
 
   const openEditor = (projectData, files) => {
@@ -139,13 +140,23 @@ export default function Dashboard() {
     }, files);
   };
 
-  const handleOpen = (p) => {
-    const files = p.files || [
-      { id: 'index.html', name: 'index.html', language: 'html', content: p.html || '' },
-      { id: 'styles.css', name: 'styles.css', language: 'css', content: p.css || '' },
-      { id: 'script.js', name: 'script.js', language: 'javascript', content: p.js || '' },
-    ];
-    openEditor(p, files);
+  const handleOpen = async (p) => {
+    // Try to load full project with files sub-collection
+    let full = p;
+    if (p.id && isFirebaseReady()) {
+      try {
+        const loaded = await loadProject(p.id);
+        if (loaded) full = loaded;
+      } catch { /* fall back to list data */ }
+    }
+    const files = full.files?.length > 0
+      ? full.files
+      : [
+          { id: 'index.html', name: 'index.html', language: 'html', content: full.html || '' },
+          { id: 'styles.css', name: 'styles.css', language: 'css', content: full.css || '' },
+          { id: 'script.js', name: 'script.js', language: 'javascript', content: full.js || '' },
+        ];
+    openEditor(full, files);
   };
 
   const handleDelete = async (id) => {
@@ -194,12 +205,16 @@ export default function Dashboard() {
           <span className="font-display font-700 tracking-tight">WebIDE</span>
         </button>
         <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 text-sm text-muted">
-            <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center">
-              <User size={12} />
+          <button
+            onClick={() => !user?.isGuest && nav('/settings')}
+            className={`flex items-center gap-2 text-sm transition-colors ${user?.isGuest ? 'text-muted cursor-default' : 'text-muted hover:text-white'}`}
+            title={user?.isGuest ? undefined : 'Account settings'}
+          >
+            <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center text-xs font-bold">
+              {(user?.displayName || user?.email || 'G')[0].toUpperCase()}
             </div>
             {user?.displayName || user?.email?.split('@')[0] || 'Guest'}
-          </div>
+          </button>
           {!user?.isGuest && (
             <button onClick={handleSignOut} className="flex items-center gap-1.5 text-muted hover:text-white transition-colors text-sm">
               <LogOut size={14} /> Sign out

@@ -8,7 +8,7 @@ import {
   Save, Download, Share2, Code2, ChevronLeft, Terminal,
   Eye, Sparkles, LayoutGrid,
   Command as CommandIcon, Check, Loader2, Users, History,
-  Settings, ShieldAlert, TerminalSquare,
+  Settings, ShieldAlert, TerminalSquare, SlidersHorizontal,
 } from 'lucide-react';
 
 import { useStore } from '../store';
@@ -223,7 +223,17 @@ export default function Editor() {
     }
     setSaving(true);
     try {
-      const id = await saveProject({ ...project, userId: user.uid });
+      const htmlFile = files.find(f => f.name.endsWith('.html') || f.name.endsWith('.htm'));
+      const cssFile = files.find(f => f.name.endsWith('.css'));
+      const jsFile = files.find(f => f.name.endsWith('.js') || f.name.endsWith('.jsx'));
+      const id = await saveProject({
+        ...project,
+        userId: user.uid,
+        files,
+        html: htmlFile?.content || project.html || '',
+        css: cssFile?.content || project.css || '',
+        js: jsFile?.content || project.js || '',
+      });
       setProject({ ...project, id });
       setDirty(false);
       notify('Project saved!', 'success');
@@ -437,6 +447,14 @@ export default function Editor() {
             className="flex items-center gap-1.5 border border-border text-muted hover:text-white hover:border-border-light transition-colors text-xs px-3 py-1.5 rounded-lg"
           >
             <Share2 size={13} /> Share
+          </button>
+
+          <button
+            onClick={() => nav('/settings')}
+            className="p-2 rounded-lg text-muted hover:text-white transition-colors"
+            title="Account Settings"
+          >
+            <SlidersHorizontal size={14} />
           </button>
 
           <button

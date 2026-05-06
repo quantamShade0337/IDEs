@@ -5,6 +5,7 @@ import Landing from './pages/Landing';
 import Auth from './pages/Auth';
 import Dashboard from './pages/Dashboard';
 import Editor from './pages/Editor';
+import AccountSettings from './pages/AccountSettings';
 
 function AuthListener() {
   const { setUser } = useStore();
@@ -38,6 +39,7 @@ export default function App() {
         <Route path="/auth" element={<Auth />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/editor" element={<Editor />} />
+        <Route path="/settings" element={<AccountSettings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
