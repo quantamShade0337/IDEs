@@ -3,24 +3,22 @@ import { motion } from 'framer-motion';
 import { X, Link2, Copy, Check } from 'lucide-react';
 import { useStore } from '../store';
 
-function encodeProject(project) {
+function encodeProject(project, files) {
   try {
-    return btoa(encodeURIComponent(JSON.stringify({
-      title: project.title,
-      html: project.html,
-      css: project.css,
-      js: project.js,
-    })));
+    const html = files.find(f => f.name.endsWith('.html'))?.content ?? project.html ?? '';
+    const css = files.find(f => f.name.endsWith('.css'))?.content ?? project.css ?? '';
+    const js = files.find(f => f.name.endsWith('.js') || f.name.endsWith('.jsx'))?.content ?? project.js ?? '';
+    return btoa(encodeURIComponent(JSON.stringify({ title: project.title, html, css, js })));
   } catch {
     return null;
   }
 }
 
 export default function ShareModal({ onClose }) {
-  const { project } = useStore();
+  const { project, files } = useStore();
   const [copied, setCopied] = useState(false);
 
-  const encoded = encodeProject(project);
+  const encoded = encodeProject(project, files);
   const shareUrl = encoded
     ? `${window.location.origin}/editor?share=${encoded}`
     : null;

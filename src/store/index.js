@@ -60,7 +60,7 @@ const DEFAULT_JS = `function handleClick() {
   btn.textContent = 'Clicked!';
   btn.style.background = 'linear-gradient(135deg, #667eea, #764ba2)';
   btn.style.color = '#fff';
-  
+
   setTimeout(() => {
     btn.textContent = 'Click me';
     btn.style.background = '#fff';
@@ -70,7 +70,6 @@ const DEFAULT_JS = `function handleClick() {
 
 console.log('Script loaded!');`;
 
-// Default files
 const DEFAULT_FILES = [
   { id: 'index.html', name: 'index.html', language: 'html', content: DEFAULT_HTML },
   { id: 'styles.css', name: 'styles.css', language: 'css', content: DEFAULT_CSS },
@@ -92,11 +91,11 @@ function getLanguage(filename) {
 export { getLanguage, DEFAULT_FILES };
 
 export const useStore = create((set, get) => ({
-  // Auth
+  // ── Auth ──────────────────────────────────────────────────────────────
   user: null,
   setUser: (user) => set({ user }),
 
-  // Current project
+  // ── Current project ───────────────────────────────────────────────────
   project: {
     id: null,
     title: 'Untitled Project',
@@ -110,7 +109,7 @@ export const useStore = create((set, get) => ({
   updateTitle: (title) =>
     set((s) => ({ project: { ...s.project, title } })),
 
-  // File system
+  // ── File system ───────────────────────────────────────────────────────
   files: DEFAULT_FILES,
   activeFileId: 'index.html',
   setFiles: (files) => set({ files }),
@@ -119,7 +118,15 @@ export const useStore = create((set, get) => ({
   addFile: (name) => {
     const id = `${Date.now()}-${name}`;
     const lang = getLanguage(name);
-    const newFile = { id, name, language: lang, content: '' };
+    const templates = {
+      html: '<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8" />\n  <title>Document</title>\n</head>\n<body>\n  \n</body>\n</html>',
+      css: '/* Styles */\n',
+      javascript: '// Script\n',
+      typescript: '// TypeScript\n',
+      json: '{\n  \n}\n',
+      markdown: '# Title\n\n',
+    };
+    const newFile = { id, name, language: lang, content: templates[lang] || '' };
     set((s) => ({ files: [...s.files, newFile], activeFileId: id }));
     return id;
   },
@@ -148,15 +155,15 @@ export const useStore = create((set, get) => ({
     });
   },
 
-  // Active tab (legacy compat)
+  // ── Active tab (legacy compat) ─────────────────────────────────────────
   activeTab: 'html',
   setActiveTab: (tab) => set({ activeTab: tab }),
 
-  // Unsaved changes
+  // ── Unsaved changes ───────────────────────────────────────────────────
   isDirty: false,
   setDirty: (v) => set({ isDirty: v }),
 
-  // AI settings
+  // ── AI settings ───────────────────────────────────────────────────────
   aiProvider: localStorage.getItem('ai_provider') || 'anthropic',
   aiKey: localStorage.getItem('ai_key') || '',
   aiModel: localStorage.getItem('ai_model') || 'claude-sonnet-4-20250514',
@@ -164,16 +171,68 @@ export const useStore = create((set, get) => ({
   setAiKey: (k) => { localStorage.setItem('ai_key', k); set({ aiKey: k }); },
   setAiModel: (m) => { localStorage.setItem('ai_model', m); set({ aiModel: m }); },
 
-  // Console logs
+  // ── Console logs ──────────────────────────────────────────────────────
   consoleLogs: [],
-  addLog: (log) => set((s) => ({ consoleLogs: [...s.consoleLogs.slice(-99), log] })),
+  addLog: (log) => set((s) => ({ consoleLogs: [...s.consoleLogs.slice(-199), log] })),
   clearLogs: () => set({ consoleLogs: [] }),
 
-  // Notifications
+  // ── Notifications ─────────────────────────────────────────────────────
   notifications: [],
   notify: (msg, type = 'info') => {
-    const id = Date.now();
+    const id = Date.now() + Math.random();
     set((s) => ({ notifications: [...s.notifications, { id, msg, type }] }));
     setTimeout(() => set((s) => ({ notifications: s.notifications.filter(n => n.id !== id) })), 3500);
+  },
+
+  // ── Collaboration ─────────────────────────────────────────────────────
+  activeCollabUsers: [],
+  setActiveCollabUsers: (users) => set({ activeCollabUsers: users }),
+
+  collabSessionActive: false,
+  setCollabSessionActive: (v) => set({ collabSessionActive: v }),
+
+  // ── Version History ───────────────────────────────────────────────────
+  snapshots: [],
+  addSnapshot: (label) => {
+    const { files, project } = get();
+    const snapshot = {
+      id: Date.now(),
+      label: label || `Snapshot ${new Date().toLocaleTimeString()}`,
+      timestamp: Date.now(),
+      files: files.map(f => ({ ...f })),
+      project: { ...project },
+    };
+    set((s) => ({
+      snapshots: [snapshot, ...s.snapshots].slice(0, 30),
+    }));
+    return snapshot;
+  },
+  restoreSnapshot: (snapshotId) => {
+    const { snapshots } = get();
+    const snap = snapshots.find(s => s.id === snapshotId);
+    if (!snap) return;
+    set({
+      files: snap.files.map(f => ({ ...f })),
+      project: { ...snap.project },
+      activeFileId: snap.files[0]?.id || null,
+      isDirty: true,
+    });
+  },
+
+  // ── Editor preferences ────────────────────────────────────────────────
+  editorFontSize: parseInt(localStorage.getItem('editor_font_size') || '13'),
+  setEditorFontSize: (size) => {
+    localStorage.setItem('editor_font_size', String(size));
+    set({ editorFontSize: size });
+  },
+  editorWordWrap: localStorage.getItem('editor_word_wrap') !== 'false',
+  setEditorWordWrap: (v) => {
+    localStorage.setItem('editor_word_wrap', String(v));
+    set({ editorWordWrap: v });
+  },
+  editorMinimap: localStorage.getItem('editor_minimap') === 'true',
+  setEditorMinimap: (v) => {
+    localStorage.setItem('editor_minimap', String(v));
+    set({ editorMinimap: v });
   },
 }));

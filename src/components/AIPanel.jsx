@@ -116,7 +116,7 @@ function SettingsPanel({ onClose }) {
 }
 
 export default function AIPanel() {
-  const { project, updateCode, notify, aiProvider, aiKey, aiModel } = useStore();
+  const { files, updateFileContent, notify, aiProvider, aiKey, aiModel } = useStore();
   const [messages, setMessages] = useState([
     {
       id: 0,
@@ -134,10 +134,25 @@ export default function AIPanel() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  const getContext = () => ({
+    html: files.find(f => f.name.endsWith('.html'))?.content || '',
+    css: files.find(f => f.name.endsWith('.css'))?.content || '',
+    js: files.find(f => f.name.endsWith('.js') || f.name.endsWith('.jsx'))?.content || '',
+  });
+
   const handleApply = (parsed, msgId) => {
-    if (parsed.html !== undefined) updateCode('html', parsed.html);
-    if (parsed.css !== undefined) updateCode('css', parsed.css);
-    if (parsed.js !== undefined) updateCode('js', parsed.js);
+    if (parsed.html !== undefined) {
+      const f = files.find(f => f.name.endsWith('.html'));
+      if (f) updateFileContent(f.id, parsed.html);
+    }
+    if (parsed.css !== undefined) {
+      const f = files.find(f => f.name.endsWith('.css'));
+      if (f) updateFileContent(f.id, parsed.css);
+    }
+    if (parsed.js !== undefined) {
+      const f = files.find(f => f.name.endsWith('.js') || f.name.endsWith('.jsx'));
+      if (f) updateFileContent(f.id, parsed.js);
+    }
     notify('AI changes applied!', 'success');
     setMessages(ms => ms.map(m => m.id === msgId ? { ...m, applied: true } : m));
   };
@@ -159,13 +174,12 @@ export default function AIPanel() {
     setMessages(ms => [...ms, userMsg, streamMsg]);
 
     try {
+      const { html, css, js } = getContext();
       const parsed = await sendAIMessage({
         provider: aiProvider,
         apiKey: aiKey,
         model: aiModel,
-        html: project.html,
-        css: project.css,
-        js: project.js,
+        html, css, js,
         prompt: input,
         onChunk: (_, fullText) => {
           setMessages(ms => ms.map(m => m.id === streamId ? { ...m, content: fullText } : m));

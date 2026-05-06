@@ -12,6 +12,7 @@ import {
   getFirestore,
   collection,
   addDoc,
+  setDoc,
   updateDoc,
   deleteDoc,
   doc,
@@ -79,18 +80,41 @@ export const signOutUser = async () => {
 
 export const saveProject = async (project) => {
   if (!db) throw new Error('Firebase not initialized');
-  const { id, ...data } = project;
-  const payload = { ...data, updatedAt: serverTimestamp() };
+  const { id, files, ...data } = project;
+  const payload = {
+    ...data,
+    updatedAt: serverTimestamp(),
+    // Store trimmed versions for thumbnail
+    html: (data.html || '').slice(0, 8000),
+    css: (data.css || '').slice(0, 8000),
+    js: (data.js || '').slice(0, 8000),
+  };
+
+  let projectId = id;
   if (id) {
     await updateDoc(doc(db, 'projects', id), payload);
-    return id;
   } else {
     const ref = await addDoc(collection(db, 'projects'), {
       ...payload,
       createdAt: serverTimestamp(),
     });
-    return ref.id;
+    projectId = ref.id;
   }
+
+  // Save files sub-collection if provided
+  if (files && files.length > 0 && projectId) {
+    for (const file of files) {
+      const fileRef = doc(db, 'projects', projectId, 'files', file.id);
+      await setDoc(fileRef, {
+        name: file.name,
+        language: file.language,
+        content: file.content,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+    }
+  }
+
+  return projectId;
 };
 
 export const loadProjects = async (userId) => {
@@ -108,7 +132,17 @@ export const loadProject = async (id) => {
   if (!db) return null;
   const snap = await getDoc(doc(db, 'projects', id));
   if (!snap.exists()) return null;
-  return { id: snap.id, ...snap.data() };
+  const project = { id: snap.id, ...snap.data() };
+
+  // Load files sub-collection
+  try {
+    const filesSnap = await getDocs(collection(db, 'projects', id, 'files'));
+    if (!filesSnap.empty) {
+      project.files = filesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }
+  } catch { /* files collection may not exist */ }
+
+  return project;
 };
 
 export const deleteProject = async (id) => {
