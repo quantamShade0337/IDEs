@@ -1,87 +1,111 @@
-# WebIDE — Code. Preview. Ship.
+# WebIDE
 
-A production-quality browser-based IDE with live preview, AI assistant (Claude + GPT-4o), Firebase auth & storage, and one-click ZIP export.
+WebIDE is a browser-based coding environment built with React, Vite, Monaco, xterm, and Firebase. It now ships as a single Node service: the frontend is served from `dist/`, and the built-in terminal connects to a real shell over WebSockets.
 
-## Stack
+## What ships now
 
-- **React + Vite** — fast dev server and build
-- **TailwindCSS** — utility-first styling
-- **Monaco Editor** — VS Code's editor in the browser
-- **Framer Motion** — smooth animations
-- **Firebase** — Google auth + Firestore project storage
-- **JSZip + FileSaver.js** — client-side ZIP export
-- **Zustand** — lightweight global state
-- **react-resizable-panels** — draggable panel layout
+- Monaco-powered editor with live preview
+- Real shell-backed web terminal
+- AI panel with user-supplied OpenAI or Anthropic keys
+- Firebase auth and project persistence
+- Share links, ZIP export, console output, collaboration UI
 
-## Features
+## Local development
 
-| Feature | Details |
-|---|---|
-| 🖊️ Monaco Editor | Syntax highlighting, autocomplete, ligatures, custom dark theme |
-| 👁 Live Preview | Debounced iframe srcDoc, sandboxed, mobile toggle |
-| 🤖 AI Assistant | Streaming chat, Claude + GPT-4o, "Apply Changes" button |
-| 💾 Firebase Save | Google auth + Firestore CRUD for projects |
-| 📦 ZIP Export | JSZip download with linked index.html / styles.css / script.js |
-| 🔗 Share | URL-encoded shareable read-only links |
-| ⌨️ Shortcuts | ⌘S save, ⌘K command palette |
-| 🖥 Console | Captured iframe logs with timestamps |
-| 🎨 Design | Vercel-inspired dark UI, Syne + DM Sans + JetBrains Mono |
-
-## Quick Start
+Install dependencies:
 
 ```bash
 npm install
+```
+
+Run the full app in dev mode:
+
+```bash
 npm run dev
 ```
 
-## Firebase Setup (optional)
+That starts:
 
-1. Go to [console.firebase.google.com](https://console.firebase.google.com)
-2. Create a project → enable Google Auth → create Firestore DB
-3. In the app, click **Sign in** → **Setup Firebase** → paste your config
+- Vite on `http://localhost:5173`
+- the terminal/backend server on `http://localhost:3001`
 
-## AI Setup
+The Vite dev server proxies `/api` and `/terminal` to the backend, so the terminal works during development too.
 
-1. Click the **✨ AI** panel in the editor
-2. Click ⚙️ Settings
-3. Choose provider (Anthropic or OpenAI) and paste your API key
-4. Keys are stored in localStorage only — never sent anywhere except the AI API
+## Production run
 
-## Project Structure
-
-```
-src/
-├── pages/
-│   ├── Landing.jsx     # Vercel-style hero page
-│   ├── Auth.jsx        # Google login + Firebase config
-│   ├── Dashboard.jsx   # Project grid (CRUD)
-│   └── Editor.jsx      # Main IDE with resizable panels
-├── components/
-│   ├── AIPanel.jsx     # Streaming AI chat with Apply Changes
-│   ├── PreviewPanel.jsx # Sandboxed iframe live preview
-│   ├── ConsolePanel.jsx # Captured console output
-│   ├── ShareModal.jsx  # URL-encoded share links
-│   ├── CommandPalette.jsx # ⌘K command palette
-│   └── Notifications.jsx  # Toast notifications
-├── lib/
-│   ├── firebase.js     # Auth + Firestore helpers
-│   ├── ai.js           # OpenAI + Anthropic streaming
-│   └── zipExport.js    # JSZip download
-└── store/
-    └── index.js        # Zustand global store
-```
-
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|---|---|
-| `⌘S` / `Ctrl+S` | Save project |
-| `⌘K` / `Ctrl+K` | Open command palette |
-| `⌘Enter` | Refresh preview |
-
-## Deployment
+Build and start the single-service app:
 
 ```bash
 npm run build
-# Deploy the dist/ folder to Vercel, Netlify, Cloudflare Pages, etc.
+npm start
 ```
+
+By default it serves on `http://localhost:3000`.
+
+## Environment variables
+
+See [.env.example](/Users/ethansoh/Downloads/Swift%20Stuff/IDEs-main/.env.example).
+
+- `PORT`: HTTP port for the Node server
+- `TERMINAL_ENABLED`: set to `false` to disable shell access
+- `TERMINAL_WORKDIR`: working directory used for new shell sessions
+- `TERMINAL_ACCESS_KEY`: required in production if you want the terminal enabled
+- `TERMINAL_SHELL`: optional explicit shell path
+
+## Render deployment
+
+This repo includes [render.yaml](/Users/ethansoh/Downloads/Swift%20Stuff/IDEs-main/render.yaml), so the easy path is:
+
+1. Push the repo to GitHub.
+2. In Render, create a new Web Service from the repo.
+3. Let Render read `render.yaml`, or use these values manually:
+   - Build command: `npm install && npm run build`
+   - Start command: `npm start`
+   - Health check path: `/api/health`
+4. Set a secret `TERMINAL_ACCESS_KEY` in Render before using the terminal.
+5. Leave `TERMINAL_ENABLED=true`.
+6. Optionally set `TERMINAL_WORKDIR` if you want the shell rooted somewhere specific.
+
+## Firebase setup
+
+Firebase is optional. The app stores config in the browser and can still run without it.
+
+1. Create a Firebase project.
+2. Enable Authentication and Firestore.
+3. Open the app and paste the Firebase web config in the setup flow.
+
+## AI setup
+
+The AI panel uses user-provided API keys from the browser.
+
+1. Open the AI panel.
+2. Pick OpenAI or Anthropic.
+3. Paste your API key.
+
+Keys are stored locally in the browser and sent directly to the provider API.
+
+## Health check
+
+The server exposes:
+
+- `/api/health`
+
+Example response:
+
+```json
+{
+  "ok": true,
+  "shell": "/bin/bash",
+  "terminalEnabled": true,
+  "terminalRequiresAuth": true,
+  "workspaceRoot": "/opt/render/project/src",
+  "built": true
+}
+```
+
+## Notes
+
+- The terminal is a real shell, not a simulated in-browser filesystem anymore.
+- In production, the terminal stays disabled unless `TERMINAL_ACCESS_KEY` is set. That is intentional, so the app does not expose a public unauthenticated shell.
+- This implementation uses a plain child shell process, so common shell commands work well, but full-screen terminal apps may still be rough compared with a full PTY setup.
+- `npm run lint` still reports pre-existing issues outside the terminal/deploy work.

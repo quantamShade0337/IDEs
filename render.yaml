@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: webide
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: TERMINAL_ENABLED
+        value: true
+      - key: TERMINAL_WORKDIR
+        value: /opt/render/project/src
