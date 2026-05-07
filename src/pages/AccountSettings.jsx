@@ -86,6 +86,25 @@ function Alert({ type, msg }) {
   );
 }
 
+function formatDateTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString([], {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function getProviderLabel(providerId) {
+  if (providerId === 'google.com') return 'Google';
+  if (providerId === 'password') return 'Email + Password';
+  return providerId;
+}
+
 // ── Profile section ───────────────────────────────────────────────────────────
 
 function ProfileSection({ user, onUpdated }) {
@@ -207,7 +226,7 @@ function EmailVerificationSection({ user }) {
 
 // ── Password section ──────────────────────────────────────────────────────────
 
-function PasswordSection({ user }) {
+function PasswordSection() {
   const hasPassword = isEmailProvider();
   const [form, setForm] = useState({ current: '', next: '', confirm: '' });
   const [loading, setLoading] = useState(false);
@@ -339,11 +358,67 @@ function ConnectedAccountsSection({ user, onUpdated }) {
   );
 }
 
-// ── Passkeys section ──────────────────────────────────────────────────────────
+function SessionOverviewSection({ user, project, firebaseReady, onOpenEditor, onOpenDashboard }) {
+  const providerLabels = user?.providerData?.length
+    ? user.providerData.map((provider) => getProviderLabel(provider.providerId))
+    : ['Unknown'];
+
+  const rows = [
+    { label: 'Workspace', value: window.location.host || 'Local' },
+    { label: 'Auth methods', value: providerLabels.join(' · ') },
+    { label: 'Created', value: formatDateTime(user?.metadata?.creationTime) },
+    { label: 'Last sign-in', value: formatDateTime(user?.metadata?.lastSignInTime) },
+  ];
+
+  return (
+    <SectionCard title="Session & Workspace" description="A quick snapshot of this account" icon={KeyRound}>
+      <div className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-2">
+          {rows.map((row) => (
+            <div key={row.label} className="rounded-xl border border-border bg-bg px-3 py-3">
+              <p className="text-[11px] uppercase tracking-[0.12em] text-muted">{row.label}</p>
+              <p className="mt-1 text-sm text-white">{row.value}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="rounded-xl border border-border bg-bg px-3 py-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.12em] text-muted">Current project</p>
+              <p className="mt-1 text-sm text-white">{project?.title || 'Untitled Project'}</p>
+              <p className="mt-1 text-xs text-muted">
+                {project?.id ? 'Saved to Firebase and ready to reopen.' : 'Still local to this browser until you save it.'}
+              </p>
+            </div>
+            <StatusBadge ok={firebaseReady} label={firebaseReady ? 'Cloud ready' : 'Local only'} />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={onOpenDashboard}
+            className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-white transition-colors hover:border-border-light"
+          >
+            Projects
+            <ChevronRight size={13} />
+          </button>
+          <button
+            onClick={onOpenEditor}
+            className="inline-flex items-center gap-2 rounded-lg bg-white px-3 py-2 text-sm font-medium text-black transition-colors hover:bg-white/90"
+          >
+            Continue editing
+            <ChevronRight size={13} />
+          </button>
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
 
 // ── Danger zone ───────────────────────────────────────────────────────────────
 
-function DangerZone({ user, onSignOut }) {
+function DangerZone() {
   const nav = useNavigate();
   const { setUser } = useStore();
   const [showDelete, setShowDelete] = useState(false);
@@ -483,7 +558,7 @@ function DangerZone({ user, onSignOut }) {
 
 export default function AccountSettings() {
   const nav = useNavigate();
-  const { user, setUser, notify } = useStore();
+  const { user, project } = useStore();
   const [firebaseUser, setFirebaseUser] = useState(null);
   const [loadingUser, setLoadingUser] = useState(true);
 
@@ -589,9 +664,16 @@ export default function AccountSettings() {
           </div>
         ) : (
           <div className="space-y-4">
+            <SessionOverviewSection
+              user={displayUser}
+              project={project}
+              firebaseReady={firebaseReady}
+              onOpenEditor={() => nav('/editor')}
+              onOpenDashboard={() => nav('/dashboard')}
+            />
             <ProfileSection user={displayUser} onUpdated={refresh} />
             <EmailVerificationSection user={displayUser} />
-            <PasswordSection user={displayUser} />
+            <PasswordSection />
             <ConnectedAccountsSection user={displayUser} onUpdated={refresh} />
             <DangerZone user={displayUser} />
           </div>

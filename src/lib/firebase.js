@@ -198,10 +198,34 @@ export const loadProject = async (id) => {
 
 export const deleteProject = async (id) => {
   if (!db) return;
-  await deleteDoc(doc(db, 'projects', id));
+  await deleteProjectTree(id);
 };
 
 export const isFirebaseReady = () => !!app && !!auth && !!db;
+
+async function deleteCollectionDocs(dbInstance, collectionRef) {
+  const snapshot = await getDocs(collectionRef);
+  await Promise.all(snapshot.docs.map((entry) => deleteDoc(entry.ref)));
+}
+
+async function deleteProjectTree(projectId) {
+  if (!db || !projectId) return;
+
+  const projectRef = doc(db, 'projects', projectId);
+  const filesRef = collection(db, 'projects', projectId, 'files');
+  const presenceRef = collection(db, 'projects', projectId, 'presence');
+  const chatRef = collection(db, 'projects', projectId, 'chat');
+  const collabSessionRef = doc(db, 'projects', projectId, 'collab', 'session');
+
+  await Promise.all([
+    deleteCollectionDocs(db, filesRef),
+    deleteCollectionDocs(db, presenceRef),
+    deleteCollectionDocs(db, chatRef),
+    deleteDoc(collabSessionRef).catch(() => {}),
+  ]);
+
+  await deleteDoc(projectRef);
+}
 
 // ── Account management ────────────────────────────────────────────────────────
 
@@ -323,10 +347,9 @@ export const deleteAccount = async (password) => {
   // Delete Firestore projects
   if (db) {
     try {
-      const { getDocs: _getDocs, collection: _col, deleteDoc: _del, doc: _doc } = await import('firebase/firestore');
-      const snap = await _getDocs(_col(db, 'projects'));
+      const snap = await getDocs(collection(db, 'projects'));
       const mine = snap.docs.filter(d => d.data().userId === user.uid);
-      await Promise.all(mine.map(d => _del(_doc(db, 'projects', d.id))));
+      await Promise.all(mine.map(d => deleteProjectTree(d.id)));
     } catch { /* best-effort */ }
   }
   await deleteUser(user);
