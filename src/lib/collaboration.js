@@ -6,10 +6,7 @@ import {
   updateDoc,
   deleteDoc,
   collection,
-  getDocs,
   serverTimestamp,
-  arrayUnion,
-  arrayRemove,
 } from 'firebase/firestore';
 import { getDb } from './firebase';
 
@@ -59,6 +56,7 @@ export function subscribePresence(projectId, callback) {
   if (!db || !projectId) return () => {};
 
   const presenceCol = collection(db, 'projects', projectId, 'presence');
+  let lastSerialized = '';
   return onSnapshot(presenceCol, (snap) => {
     const now = Date.now();
     const users = snap.docs
@@ -66,7 +64,19 @@ export function subscribePresence(projectId, callback) {
       .filter(u => {
         const last = u.lastSeen?.toMillis?.() || 0;
         return now - last < 30000; // only show active in last 30s
-      });
+      })
+      .sort((a, b) => a.uid.localeCompare(b.uid));
+
+    const serialized = JSON.stringify(users.map((u) => ({
+      uid: u.uid,
+      activeFileId: u.activeFileId || null,
+      cursorLine: u.cursor?.line || null,
+      cursorColumn: u.cursor?.column || null,
+      lastSeen: u.lastSeen?.toMillis?.() || 0,
+    })));
+
+    if (serialized === lastSerialized) return;
+    lastSerialized = serialized;
     callback(users);
   }, () => {});
 }
@@ -96,8 +106,11 @@ export function subscribeFiles(projectId, callback) {
 
   const filesCol = collection(db, 'projects', projectId, 'files');
   return onSnapshot(filesCol, (snap) => {
-    const files = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    callback(files);
+    const changes = snap.docChanges().map((change) => ({
+      type: change.type,
+      file: { id: change.doc.id, ...change.doc.data() },
+    }));
+    callback(changes);
   }, () => {});
 }
 

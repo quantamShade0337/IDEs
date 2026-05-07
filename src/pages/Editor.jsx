@@ -15,7 +15,7 @@ import { useStore } from '../store';
 import { saveProject, isFirebaseReady } from '../lib/firebase';
 import { exportProject } from '../lib/zipExport';
 import { scanCode, isHighRisk } from '../lib/security';
-import { joinSession, subscribePresence, updateCursor } from '../lib/collaboration';
+import { joinSession, subscribePresence, updateCursor, subscribeFiles, syncFileContent, subscribeCollabSession } from '../lib/collaboration';
 import PreviewPanel from '../components/PreviewPanel';
 import ConsolePanel from '../components/ConsolePanel';
 import ShareModal from '../components/ShareModal';
@@ -109,6 +109,10 @@ export default function Editor() {
   } = useStore();
 
   const [saving, setSaving] = useState(false);
+  const [collabSession, setCollabSession] = useState(null);
+  const syncTimerRef = useRef({});
+  const lastCursorRef = useRef({ fileId: null, line: null, column: null, sentAt: 0 });
+  const cursorTimerRef = useRef(null);
   const [showShare, setShowShare] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [showConsole, setShowConsole] = useState(false);
@@ -144,36 +148,153 @@ export default function Editor() {
       }
     }
 
-    if (collabParam && user && !user.isGuest) {
-      // Join collaboration session
-      notify(`Joining collaboration on project ${collabParam}…`, 'info');
-      // The project will be loaded via Firestore subscription in CollaborationPanel
+    if (collabParam && user && !user.isGuest && isFirebaseReady()) {
+      // Load the project from Firestore and join the session
+      import('../lib/firebase').then(({ loadProject }) => {
+        loadProject(collabParam).then(loaded => {
+          if (!loaded) { notify('Collab project not found', 'error'); return; }
+          const { setProject, setFiles, setActiveFileId } = useStore.getState();
+          setProject(loaded);
+          if (loaded.files?.length > 0) {
+            setFiles(loaded.files);
+            setActiveFileId(loaded.files[0].id);
+          }
+          notify('Joined collaboration session', 'success');
+        }).catch(() => notify('Failed to load collab project', 'error'));
+      });
     }
-  }, []);
+  }, [user]);
 
   // Presence tracking
+  // Refs for collab real-time sync
+  const lastSyncedRef = useRef({});   // fileId -> content we last pushed to Firestore
+  const isApplyingRemote = useRef(false); // true while we're applying a remote change to Monaco
+
   useEffect(() => {
     if (!user || user.isGuest || !project.id || !isFirebaseReady()) return;
 
     const leave = joinSession(project.id, user);
     leaveSessionRef.current = leave;
 
-    const unsub = subscribePresence(project.id, setActiveCollabUsers);
+    const unsubPresence = subscribePresence(project.id, setActiveCollabUsers);
+
+    const unsubFiles = subscribeFiles(project.id, (changes) => {
+      const { files: localFiles, setFiles, activeFileId: curActive, updateFileContent: updFC } = useStore.getState();
+      const editor = editorRef.current;
+
+      let nextFiles = localFiles;
+      let hasStructuralChange = false;
+
+      changes.forEach(({ type, file: rf }) => {
+        // Skip echoes: either content matches what we last pushed, or we were the last writer
+        if (lastSyncedRef.current[rf.id] === rf.content) return;
+        if (rf.updatedBy === user.uid) return;
+
+        const lf = nextFiles.find(f => f.id === rf.id);
+
+        if (type === 'removed') {
+          if (!lf) return;
+          nextFiles = nextFiles.filter((f) => f.id !== rf.id);
+          hasStructuralChange = true;
+          return;
+        }
+
+        if (lf && lf.content === rf.content && lf.name === rf.name && lf.language === rf.language) return;
+
+        if (rf.id === curActive && editor) {
+          // Apply directly to Monaco model to preserve cursor & undo stack
+          const model = editor.getModel();
+          if (model && model.getValue() !== rf.content) {
+            isApplyingRemote.current = true;
+            const fullRange = model.getFullModelRange();
+            model.pushEditOperations(
+              editor.getSelections(),
+              [{ range: fullRange, text: rf.content }],
+              () => null
+            );
+            isApplyingRemote.current = false;
+          }
+          // Also keep the store in sync so save works correctly
+          updFC(rf.id, rf.content);
+          nextFiles = nextFiles.map((f) => (f.id === rf.id ? { ...f, ...rf } : f));
+        } else if (lf) {
+          nextFiles = nextFiles.map((f) => (f.id === rf.id ? { ...f, ...rf } : f));
+          hasStructuralChange = true;
+        } else {
+          // New file added by collaborator
+          nextFiles = [...nextFiles, rf];
+          hasStructuralChange = true;
+        }
+      });
+
+      if (hasStructuralChange) {
+        setFiles(nextFiles);
+      }
+    });
+
+    const unsubSession = subscribeCollabSession(project.id, setCollabSession);
+
     return () => {
       leave();
-      unsub();
+      unsubPresence();
+      unsubFiles();
+      unsubSession();
     };
   }, [user, project.id]);
+
+  // Near-real-time sync of local edits to Firestore (skips remote-applied changes)
+  const syncEdit = useCallback((fileId, content) => {
+    if (!project.id || !isFirebaseReady() || !user || user.isGuest) return;
+    if (!collabSession?.active) return;
+    if (isApplyingRemote.current) return; // don't echo remote changes back
+    if (lastSyncedRef.current[fileId] === content) return;
+    clearTimeout(syncTimerRef.current[fileId]);
+    syncTimerRef.current[fileId] = setTimeout(() => {
+      lastSyncedRef.current[fileId] = content;
+      syncFileContent(project.id, fileId, content, user.uid).catch(() => {});
+    }, 180);
+  }, [project.id, collabSession, user]);
+
+  useEffect(() => () => {
+    Object.values(syncTimerRef.current).forEach((timer) => clearTimeout(timer));
+    if (cursorTimerRef.current) clearTimeout(cursorTimerRef.current);
+  }, []);
 
   // Update cursor position in Firestore for collaboration
   const handleEditorMount = (editor) => {
     editorRef.current = editor;
     if (!user || user.isGuest || !project.id) return;
     editor.onDidChangeCursorPosition((e) => {
-      updateCursor(project.id, user.uid, activeFileId, {
+      const nextCursor = {
+        fileId: activeFileId,
         line: e.position.lineNumber,
         column: e.position.column,
-      });
+      };
+      const last = lastCursorRef.current;
+      if (
+        last.fileId === nextCursor.fileId &&
+        last.line === nextCursor.line &&
+        last.column === nextCursor.column
+      ) {
+        return;
+      }
+
+      const send = () => {
+        lastCursorRef.current = { ...nextCursor, sentAt: Date.now() };
+        updateCursor(project.id, user.uid, activeFileId, {
+          line: nextCursor.line,
+          column: nextCursor.column,
+        });
+      };
+
+      const elapsed = Date.now() - last.sentAt;
+      if (elapsed > 120) {
+        if (cursorTimerRef.current) clearTimeout(cursorTimerRef.current);
+        send();
+      } else {
+        if (cursorTimerRef.current) clearTimeout(cursorTimerRef.current);
+        cursorTimerRef.current = setTimeout(send, 120 - elapsed);
+      }
     });
   };
 
@@ -501,7 +622,11 @@ export default function Editor() {
                         height="100%"
                         language={activeFile.language}
                         value={activeFile.content}
-                        onChange={(val) => updateFileContent(activeFile.id, val || '')}
+                        onChange={(val) => {
+                          const content = val || '';
+                          updateFileContent(activeFile.id, content);
+                          syncEdit(activeFile.id, content);
+                        }}
                         beforeMount={defineTheme}
                         onMount={handleEditorMount}
                         options={{ ...monacoOptions, theme: 'webide-dark' }}

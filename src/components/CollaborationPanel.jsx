@@ -65,6 +65,7 @@ export default function CollaborationPanel({ projectId }) {
   const [copied, setCopied] = useState(false);
   const [sending, setSending] = useState(false);
   const chatBottomRef = useRef(null);
+  const prevMessageCountRef = useRef(0);
   const firebaseReady = isFirebaseReady();
 
   useEffect(() => {
@@ -78,7 +79,10 @@ export default function CollaborationPanel({ projectId }) {
   }, [projectId, firebaseReady]);
 
   useEffect(() => {
-    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (messages.length > prevMessageCountRef.current) {
+      chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+    prevMessageCountRef.current = messages.length;
   }, [messages]);
 
   const handleStartSession = async () => {

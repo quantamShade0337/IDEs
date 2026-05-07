@@ -54,6 +54,17 @@ export default function FileExplorer() {
     if (adding) addInputRef.current?.focus();
   }, [adding]);
 
+  // F2 to rename active file
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === 'F2' && activeFileId && !renaming && !adding) {
+        setRenaming(activeFileId);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [activeFileId, renaming, adding]);
+
   const handleAdd = () => {
     if (!newFileName.trim()) { setAdding(false); return; }
     addFile(newFileName.trim());
@@ -72,14 +83,7 @@ export default function FileExplorer() {
           updateFileContent(existing.id, content);
           setActiveFileId(existing.id);
         } else {
-          const id = addFile(file.name);
-          // addFile creates empty, we need to set content after
-          setTimeout(() => {
-            useStore.getState().updateFileContent(
-              useStore.getState().files.find(f => f.name === file.name && f.content === '')?.id || id,
-              content
-            );
-          }, 0);
+          addFile(file.name, content);
         }
       };
       reader.readAsText(file);
@@ -145,27 +149,31 @@ export default function FileExplorer() {
               />
             ) : (
               <>
-                <span className="text-xs truncate flex-1 min-w-0">{file.name}</span>
-                {(hovering === file.id || activeFileId === file.id) && renaming !== file.id && (
-                  <div className="flex items-center gap-0.5 shrink-0" onClick={e => e.stopPropagation()}>
+                <span
+                  className="text-xs truncate flex-1 min-w-0"
+                  onDoubleClick={e => { e.stopPropagation(); setRenaming(file.id); }}
+                  title="Double-click to rename"
+                >
+                  {file.name}
+                </span>
+                <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
+                  <button
+                    onClick={() => setRenaming(file.id)}
+                    className="p-0.5 text-muted hover:text-white transition-colors"
+                    title="Rename (F2)"
+                  >
+                    <PencilLine size={10} />
+                  </button>
+                  {files.length > 1 && (
                     <button
-                      onClick={() => setRenaming(file.id)}
-                      className="p-0.5 text-muted hover:text-white transition-colors opacity-0 group-hover:opacity-100"
-                      title="Rename"
+                      onClick={() => deleteFile(file.id)}
+                      className="p-0.5 text-muted hover:text-red-400 transition-colors"
+                      title="Delete"
                     >
-                      <PencilLine size={10} />
+                      <Trash2 size={10} />
                     </button>
-                    {files.length > 1 && (
-                      <button
-                        onClick={() => deleteFile(file.id)}
-                        className="p-0.5 text-muted hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
-                        title="Delete"
-                      >
-                        <Trash2 size={10} />
-                      </button>
-                    )}
-                  </div>
-                )}
+                  )}
+                </div>
               </>
             )}
           </div>

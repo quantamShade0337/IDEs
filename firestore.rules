@@ -2,38 +2,46 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Projects — only the owner can read/write
+    function isOwner(projectId) {
+      return request.auth != null
+          && get(/databases/$(database)/documents/projects/$(projectId)).data.userId == request.auth.uid;
+    }
+
+    function isCollabActive(projectId) {
+      let session = get(/databases/$(database)/documents/projects/$(projectId)/collab/session);
+      return session.data.active == true;
+    }
+
+    // Projects — only the owner can read/write the project document itself
     match /projects/{projectId} {
       allow read, write: if request.auth != null
                          && request.auth.uid == resource.data.userId;
-
       allow create: if request.auth != null
                     && request.auth.uid == request.resource.data.userId;
 
-      // Files sub-collection — inherits same ownership rule
+      // Files — owner always; collaborators can read/write when session is active
       match /files/{fileId} {
-        allow read, write: if request.auth != null
-                           && request.auth.uid == get(/databases/$(database)/documents/projects/$(projectId)).data.userId;
+        allow read, write: if request.auth != null && isOwner(projectId);
+        allow read, write: if request.auth != null && isCollabActive(projectId);
       }
-    }
 
-    // Collaboration presence/cursors — any authenticated user can read,
-    // but only write their own presence doc (uid == docId)
-    match /presence/{projectId}/users/{uid} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && request.auth.uid == uid;
-    }
+      // Presence — any authed user can write their own doc, anyone can read
+      match /presence/{uid} {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null && request.auth.uid == uid;
+      }
 
-    // Collab sessions — project owner can write; any authenticated user can read
-    match /collabSessions/{projectId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null
-                   && request.auth.uid == get(/databases/$(database)/documents/projects/$(projectId)).data.userId;
-    }
+      // Collab session — owner writes, anyone authenticated reads
+      match /collab/session {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null && isOwner(projectId);
+      }
 
-    // Chat messages — any authenticated user can read/write
-    match /chat/{projectId}/messages/{messageId} {
-      allow read, write: if request.auth != null;
+      // Chat — any authenticated user in a collab session can send/receive
+      match /chat/{messageId} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null;
+      }
     }
 
     // Deny everything else

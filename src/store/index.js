@@ -117,7 +117,7 @@ export const useStore = create((set, get) => ({
   setFiles: (files) => set({ files }),
   setActiveFileId: (id) => set({ activeFileId: id }),
 
-  addFile: (name) => {
+  addFile: (name, initialContent) => {
     const id = `${Date.now()}-${name}`;
     const lang = getLanguage(name);
     const templates = {
@@ -128,7 +128,8 @@ export const useStore = create((set, get) => ({
       json: '{\n  \n}\n',
       markdown: '# Title\n\n',
     };
-    const newFile = { id, name, language: lang, content: templates[lang] || '' };
+    const content = initialContent !== undefined ? initialContent : (templates[lang] || '');
+    const newFile = { id, name, language: lang, content };
     set((s) => ({ files: [...s.files, newFile], activeFileId: id }));
     return id;
   },
