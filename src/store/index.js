@@ -93,7 +93,9 @@ export { getLanguage, DEFAULT_FILES };
 export const useStore = create((set, get) => ({
   // ── Auth ──────────────────────────────────────────────────────────────
   user: null,
-  setUser: (user) => set({ user }),
+  authLoading: true,
+  setUser: (user) => set({ user, authLoading: false }),
+  setAuthLoading: (v) => set({ authLoading: v }),
 
   // ── Current project ───────────────────────────────────────────────────
   project: {

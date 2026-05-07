@@ -226,7 +226,7 @@ export default function Editor() {
       const htmlFile = files.find(f => f.name.endsWith('.html') || f.name.endsWith('.htm'));
       const cssFile = files.find(f => f.name.endsWith('.css'));
       const jsFile = files.find(f => f.name.endsWith('.js') || f.name.endsWith('.jsx'));
-      const id = await saveProject({
+      const result = await saveProject({
         ...project,
         userId: user.uid,
         files,
@@ -234,7 +234,7 @@ export default function Editor() {
         css: cssFile?.content || project.css || '',
         js: jsFile?.content || project.js || '',
       });
-      setProject({ ...project, id });
+      setProject({ ...project, id: result });
       setDirty(false);
       notify('Project saved!', 'success');
     } catch (e) {

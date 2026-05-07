@@ -104,13 +104,18 @@ export const signOutUser = async () => {
 export const saveProject = async (project) => {
   if (!db) throw new Error('Firebase not initialized');
   const { id, files, ...data } = project;
+  const THUMBNAIL_LIMIT = 8000;
   const payload = {
     ...data,
     updatedAt: serverTimestamp(),
-    // Store trimmed versions for thumbnail
-    html: (data.html || '').slice(0, 8000),
-    css: (data.css || '').slice(0, 8000),
-    js: (data.js || '').slice(0, 8000),
+    // Top-level fields are thumbnail-only; full content is in files sub-collection
+    html: (data.html || '').slice(0, THUMBNAIL_LIMIT),
+    css: (data.css || '').slice(0, THUMBNAIL_LIMIT),
+    js: (data.js || '').slice(0, THUMBNAIL_LIMIT),
+    // Flag so callers know whether any file was truncated for the thumbnail
+    thumbnailTruncated: [data.html, data.css, data.js].some(
+      s => (s || '').length > THUMBNAIL_LIMIT
+    ),
   };
 
   let projectId = id;

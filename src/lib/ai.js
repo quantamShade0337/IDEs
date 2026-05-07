@@ -1,8 +1,8 @@
-// AI assistant - supports OpenAI and Anthropic
+// AI assistant — all API calls proxy through /api/ai on the server (keys never leave the backend)
 export const AI_MODELS = {
   anthropic: [
-    { id: 'claude-opus-4-20250514', label: 'Claude Opus 4' },
     { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
+    { id: 'claude-opus-4-20250514', label: 'Claude Opus 4' },
     { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
   ],
   openai: [
@@ -12,7 +12,7 @@ export const AI_MODELS = {
   ],
 };
 
-const SYSTEM_PROMPT = `You are an expert web developer AI assistant integrated into a browser IDE. 
+const SYSTEM_PROMPT = `You are an expert web developer AI assistant integrated into a browser IDE.
 The user will provide you with HTML, CSS, and JavaScript code along with a request.
 You MUST respond with a valid JSON object (no markdown, no explanation outside JSON) in this exact format:
 {
@@ -29,9 +29,18 @@ Rules:
 - If asked to add features, implement them fully
 - Preserve existing functionality unless asked to change it`;
 
-export const sendAIMessage = async ({ provider, apiKey, model, html, css, js, prompt, onChunk }) => {
-  if (!apiKey) throw new Error('No API key provided');
+// Check which providers have server-side keys configured
+export const fetchAvailableProviders = async () => {
+  try {
+    const res = await fetch('/api/ai/providers');
+    if (!res.ok) return { anthropic: false, openai: false };
+    return res.json();
+  } catch {
+    return { anthropic: false, openai: false };
+  }
+};
 
+export const sendAIMessage = async ({ provider, model, html, css, js, prompt, onChunk }) => {
   const userMessage = `Here is my current code:
 
 HTML:
@@ -51,66 +60,27 @@ ${js}
 
 Request: ${prompt}`;
 
-  if (provider === 'anthropic') {
-    return callAnthropic({ apiKey, model, userMessage, onChunk });
-  } else {
-    return callOpenAI({ apiKey, model, userMessage, onChunk });
-  }
-};
+  const messages = provider === 'anthropic'
+    ? [{ role: 'user', content: userMessage }]
+    : [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: userMessage }];
 
-const callAnthropic = async ({ apiKey, model, userMessage, onChunk }) => {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const system = provider === 'anthropic' ? SYSTEM_PROMPT : undefined;
+
+  const response = await fetch('/api/ai', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 4096,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userMessage }],
-      stream: true,
-    }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, model, messages, system }),
   });
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    throw new Error(err.error?.message || `API error: ${response.status}`);
+    throw new Error(err.error || `Server error: ${response.status}`);
   }
 
-  return streamResponse(response, onChunk);
+  return streamResponse(response, onChunk, provider);
 };
 
-const callOpenAI = async ({ apiKey, model, userMessage, onChunk }) => {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 4096,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userMessage },
-      ],
-      stream: true,
-    }),
-  });
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.error?.message || `API error: ${response.status}`);
-  }
-
-  return streamResponse(response, onChunk, 'openai');
-};
-
-const streamResponse = async (response, onChunk, type = 'anthropic') => {
+const streamResponse = async (response, onChunk, provider = 'anthropic') => {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let fullText = '';
@@ -128,7 +98,7 @@ const streamResponse = async (response, onChunk, type = 'anthropic') => {
       try {
         const parsed = JSON.parse(data);
         let text = '';
-        if (type === 'anthropic') {
+        if (provider === 'anthropic') {
           text = parsed.delta?.text || '';
         } else {
           text = parsed.choices?.[0]?.delta?.content || '';
@@ -137,7 +107,7 @@ const streamResponse = async (response, onChunk, type = 'anthropic') => {
           fullText += text;
           onChunk?.(text, fullText);
         }
-      } catch { /* skip malformed */ }
+      } catch { /* skip malformed SSE lines */ }
     }
   }
 
@@ -145,15 +115,12 @@ const streamResponse = async (response, onChunk, type = 'anthropic') => {
 };
 
 export const parseAIResponse = (text) => {
-  // Try to extract JSON from response
   const cleaned = text.trim();
-  
-  // Try direct parse
+
   try {
     return JSON.parse(cleaned);
   } catch { /* */ }
 
-  // Try to find JSON block
   const jsonMatch = cleaned.match(/\{[\s\S]*"html"[\s\S]*"css"[\s\S]*"js"[\s\S]*\}/);
   if (jsonMatch) {
     try {
@@ -161,7 +128,6 @@ export const parseAIResponse = (text) => {
     } catch { /* */ }
   }
 
-  // Fallback: extract code blocks manually
   const extract = (lang) => {
     const match = cleaned.match(new RegExp(`\`\`\`(?:${lang})?\\n?([\\s\\S]*?)\`\`\``, 'i'));
     return match ? match[1].trim() : '';

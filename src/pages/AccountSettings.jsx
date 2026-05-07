@@ -5,7 +5,7 @@ import {
   ArrowLeft, User, Mail, Lock, Shield, KeyRound,
   Trash2, Check, AlertCircle, Loader2, Eye, EyeOff,
   CheckCircle2, XCircle, Plus, ChevronRight, Code2,
-  Fingerprint, LogOut,
+  LogOut,
 } from 'lucide-react';
 import {
   updateDisplayName,
@@ -14,9 +14,6 @@ import {
   linkGoogleAccount,
   isGoogleLinked,
   isEmailProvider,
-  registerPasskey,
-  getPasskeys,
-  removePasskey,
   deleteAccount,
   signOutUser,
   isFirebaseReady,
@@ -344,85 +341,6 @@ function ConnectedAccountsSection({ user, onUpdated }) {
 
 // ── Passkeys section ──────────────────────────────────────────────────────────
 
-function PasskeysSection() {
-  const [passkeys, setPasskeys] = useState(getPasskeys);
-  const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState(null);
-  const [removing, setRemoving] = useState(null);
-  const supported = !!window.PublicKeyCredential;
-
-  const handleAdd = async () => {
-    setLoading(true);
-    setStatus(null);
-    try {
-      const entry = await registerPasskey();
-      setPasskeys(getPasskeys());
-      setStatus({ type: 'success', msg: `Passkey "${entry.name}" added.` });
-    } catch (e) {
-      const msg = e.name === 'NotAllowedError'
-        ? 'Passkey creation was cancelled.'
-        : e.message;
-      setStatus({ type: 'error', msg });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleRemove = (id) => {
-    removePasskey(id);
-    setPasskeys(getPasskeys());
-    setRemoving(null);
-  };
-
-  return (
-    <SectionCard title="Passkeys" description="Sign in with Face ID, Touch ID, or security key" icon={Fingerprint}>
-      {!supported ? (
-        <p className="text-sm text-muted">Passkeys are not supported in this browser.</p>
-      ) : (
-        <div className="space-y-4">
-          {passkeys.length > 0 ? (
-            <div className="space-y-2">
-              {passkeys.map(pk => (
-                <div key={pk.id} className="flex items-center justify-between py-2.5 px-3 bg-bg border border-border rounded-xl">
-                  <div className="flex items-center gap-2.5">
-                    <Fingerprint size={14} className="text-muted" />
-                    <div>
-                      <p className="text-sm">{pk.name}</p>
-                      <p className="text-xs text-muted">Added {new Date(pk.createdAt).toLocaleDateString()}</p>
-                    </div>
-                  </div>
-                  {removing === pk.id ? (
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => handleRemove(pk.id)} className="text-xs text-red-400 hover:text-red-300 font-medium">Remove</button>
-                      <button onClick={() => setRemoving(null)} className="text-xs text-muted hover:text-white">Cancel</button>
-                    </div>
-                  ) : (
-                    <button onClick={() => setRemoving(pk.id)} className="text-muted hover:text-red-400 transition-colors p-1">
-                      <Trash2 size={13} />
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted">No passkeys added yet. Add one for faster, passwordless sign-in.</p>
-          )}
-
-          <button
-            onClick={handleAdd}
-            disabled={loading}
-            className="flex items-center gap-2 border border-border text-white text-sm px-4 py-2 rounded-lg hover:border-border-light transition-colors disabled:opacity-40"
-          >
-            {loading ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
-            Add passkey
-          </button>
-          {status && <Alert type={status.type} msg={status.msg} />}
-        </div>
-      )}
-    </SectionCard>
-  );
-}
-
 // ── Danger zone ───────────────────────────────────────────────────────────────
 
 function DangerZone({ user, onSignOut }) {
@@ -675,7 +593,6 @@ export default function AccountSettings() {
             <EmailVerificationSection user={displayUser} />
             <PasswordSection user={displayUser} />
             <ConnectedAccountsSection user={displayUser} onUpdated={refresh} />
-            <PasskeysSection />
             <DangerZone user={displayUser} />
           </div>
         )}

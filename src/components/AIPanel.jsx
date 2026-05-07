@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Send, Sparkles, Settings, Check, X, ChevronDown, Loader } from 'lucide-react';
-import { sendAIMessage, AI_MODELS, parseAIResponse } from '../lib/ai';
+import { sendAIMessage, AI_MODELS, fetchAvailableProviders } from '../lib/ai';
 import { useStore } from '../store';
 
 function Message({ msg }) {
@@ -39,9 +39,8 @@ function Message({ msg }) {
   );
 }
 
-function SettingsPanel({ onClose }) {
-  const { aiProvider, aiKey, aiModel, setAiProvider, setAiKey, setAiModel } = useStore();
-  const [key, setKey] = useState(aiKey);
+function SettingsPanel({ onClose, available }) {
+  const { aiProvider, aiModel, setAiProvider, setAiModel } = useStore();
   const models = AI_MODELS[aiProvider] || [];
 
   return (
@@ -92,23 +91,8 @@ function SettingsPanel({ onClose }) {
           </select>
         </div>
 
-        <div>
-          <label className="text-xs text-muted mb-1.5 block">API Key</label>
-          <div className="flex gap-2">
-            <input
-              type="password"
-              value={key}
-              onChange={e => setKey(e.target.value)}
-              placeholder={`${aiProvider === 'anthropic' ? 'sk-ant-...' : 'sk-...'}`}
-              className="flex-1 bg-bg border border-border rounded-lg px-3 py-2 text-xs font-mono text-white placeholder-muted focus:outline-none focus:border-border-light"
-            />
-            <button
-              onClick={() => { setAiKey(key); onClose(); }}
-              className="bg-white text-black px-3 rounded-lg text-xs font-medium"
-            >
-              Save
-            </button>
-          </div>
+        <div className={`text-xs rounded-lg px-3 py-2 border ${available ? 'bg-green-500/10 border-green-500/20 text-green-400' : 'bg-red-500/10 border-red-500/20 text-red-400'}`}>
+          {available ? 'Provider available on server' : 'Provider not configured on server — set the API key env var on your deployment'}
         </div>
       </div>
     </motion.div>
@@ -116,7 +100,7 @@ function SettingsPanel({ onClose }) {
 }
 
 export default function AIPanel() {
-  const { files, updateFileContent, notify, aiProvider, aiKey, aiModel } = useStore();
+  const { files, updateFileContent, notify, aiProvider, aiModel } = useStore();
   const [messages, setMessages] = useState([
     {
       id: 0,
@@ -127,12 +111,17 @@ export default function AIPanel() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [available, setAvailable] = useState(null);
   const bottomRef = useRef(null);
   const inputRef = useRef(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    fetchAvailableProviders().then(p => setAvailable(p));
+  }, []);
 
   const getContext = () => ({
     html: files.find(f => f.name.endsWith('.html'))?.content || '',
@@ -159,9 +148,9 @@ export default function AIPanel() {
 
   const send = async () => {
     if (!input.trim() || loading) return;
-    if (!aiKey) {
+    if (available && !available[aiProvider]) {
       setShowSettings(true);
-      notify('Add your API key in settings', 'warning');
+      notify('AI provider not configured on this server', 'warning');
       return;
     }
 
@@ -177,7 +166,6 @@ export default function AIPanel() {
       const { html, css, js } = getContext();
       const parsed = await sendAIMessage({
         provider: aiProvider,
-        apiKey: aiKey,
         model: aiModel,
         html, css, js,
         prompt: input,
@@ -226,9 +214,9 @@ export default function AIPanel() {
         <div className="flex items-center gap-2">
           <Sparkles size={14} className="text-white" />
           <span className="text-sm font-medium">AI Assistant</span>
-          {!aiKey && (
+          {available && !available[aiProvider] && (
             <span className="text-xs bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 rounded px-2 py-0.5">
-              No key
+              Unavailable
             </span>
           )}
         </div>
@@ -241,7 +229,7 @@ export default function AIPanel() {
       </div>
 
       <AnimatePresence>
-        {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+        {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} available={available?.[aiProvider] ?? null} />}
       </AnimatePresence>
 
       {/* Messages */}

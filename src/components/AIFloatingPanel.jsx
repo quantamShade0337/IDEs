@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Send, Sparkles, Settings, Check, X, Loader, GripVertical, Minus, Maximize2 } from 'lucide-react';
-import { sendAIMessage, AI_MODELS } from '../lib/ai';
+import { sendAIMessage, AI_MODELS, fetchAvailableProviders } from '../lib/ai';
 import { useStore } from '../store';
 
 function Message({ msg }) {
@@ -39,9 +39,8 @@ function Message({ msg }) {
   );
 }
 
-function SettingsPanel({ onClose }) {
-  const { aiProvider, aiKey, aiModel, setAiProvider, setAiKey, setAiModel } = useStore();
-  const [key, setKey] = useState(aiKey);
+function SettingsPanel({ onClose, available }) {
+  const { aiProvider, aiModel, setAiProvider, setAiModel } = useStore();
   const models = AI_MODELS[aiProvider] || [];
 
   return (
@@ -77,20 +76,8 @@ function SettingsPanel({ onClose }) {
             {models.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
           </select>
         </div>
-        <div>
-          <label className="text-xs text-muted mb-2 block">API Key</label>
-          <div className="flex gap-2">
-            <input
-              type="password"
-              value={key}
-              onChange={e => setKey(e.target.value)}
-              placeholder={aiProvider === 'anthropic' ? 'sk-ant-...' : 'sk-...'}
-              className="flex-1 bg-bg border border-border rounded-lg px-3 py-2 text-xs font-mono text-white placeholder-muted focus:outline-none"
-            />
-            <button onClick={() => { setAiKey(key); onClose(); }} className="bg-white text-black px-3 rounded-lg text-xs font-medium">
-              Save
-            </button>
-          </div>
+        <div className={`text-xs rounded-lg px-3 py-2 border ${available ? 'bg-green-500/10 border-green-500/20 text-green-400' : 'bg-red-500/10 border-red-500/20 text-red-400'}`}>
+          {available ? 'Provider available on server' : 'Provider not configured — set the API key env var on your deployment'}
         </div>
       </div>
     </div>
@@ -103,7 +90,7 @@ const DEFAULT_W = 360;
 const DEFAULT_H = 520;
 
 export default function AIFloatingPanel({ onClose }) {
-  const { files, activeFileId, updateFileContent, notify, aiProvider, aiKey, aiModel } = useStore();
+  const { files, activeFileId, updateFileContent, notify, aiProvider, aiModel } = useStore();
 
   const [messages, setMessages] = useState([
     { id: 0, role: 'assistant', content: "Hi! Describe what you want to build or change." }
@@ -112,6 +99,11 @@ export default function AIFloatingPanel({ onClose }) {
   const [loading, setLoading] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [minimized, setMinimized] = useState(false);
+  const [available, setAvailable] = useState(null);
+
+  useEffect(() => {
+    fetchAvailableProviders().then(p => setAvailable(p));
+  }, []);
 
   // Position and size
   const [pos, setPos] = useState({ x: window.innerWidth - DEFAULT_W - 32, y: 80 });
@@ -199,7 +191,11 @@ export default function AIFloatingPanel({ onClose }) {
 
   const send = async () => {
     if (!input.trim() || loading) return;
-    if (!aiKey) { setShowSettings(true); notify('Add your API key in settings', 'warning'); return; }
+    if (available && !available[aiProvider]) {
+      setShowSettings(true);
+      notify('AI provider not configured on this server', 'warning');
+      return;
+    }
 
     const userMsg = { id: Date.now(), role: 'user', content: input };
     setInput('');
@@ -212,7 +208,6 @@ export default function AIFloatingPanel({ onClose }) {
     try {
       const parsed = await sendAIMessage({
         provider: aiProvider,
-        apiKey: aiKey,
         model: aiModel,
         html, css, js,
         prompt: input,
@@ -258,9 +253,9 @@ export default function AIFloatingPanel({ onClose }) {
           <GripVertical size={12} className="text-muted" />
           <Sparkles size={13} className="text-white" />
           <span className="text-xs font-medium">AI Assistant</span>
-          {!aiKey && (
+          {available && !available[aiProvider] && (
             <span className="text-xs bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 rounded px-1.5 py-0.5">
-              No key
+              Unavailable
             </span>
           )}
         </div>
@@ -293,7 +288,7 @@ export default function AIFloatingPanel({ onClose }) {
         <>
           {/* Messages */}
           <div className="flex-1 overflow-y-auto px-3 py-3 relative">
-            {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+            {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} available={available?.[aiProvider] ?? null} />}
             {messages.map(msg => <Message key={msg.id} msg={msg} />)}
             <div ref={bottomRef} />
           </div>

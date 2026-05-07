@@ -102,6 +102,7 @@ export default function Dashboard() {
   const [search, setSearch] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [showTemplates, setShowTemplates] = useState(false);
+  const [openingId, setOpeningId] = useState(null);
 
   useEffect(() => {
     if (!user) { nav('/auth'); return; }
@@ -141,7 +142,7 @@ export default function Dashboard() {
   };
 
   const handleOpen = async (p) => {
-    // Try to load full project with files sub-collection
+    setOpeningId(p.id);
     let full = p;
     if (p.id && isFirebaseReady()) {
       try {
@@ -336,9 +337,10 @@ export default function Dashboard() {
                   <div className="flex gap-2">
                     <button
                       onClick={(e) => { e.stopPropagation(); handleOpen(p); }}
-                      className="flex-1 bg-bg border border-border hover:border-border-light text-white text-xs py-2 rounded-lg transition-colors font-medium"
+                      disabled={openingId === p.id}
+                      className="flex-1 bg-bg border border-border hover:border-border-light text-white text-xs py-2 rounded-lg transition-colors font-medium disabled:opacity-60 disabled:cursor-wait"
                     >
-                      Open
+                      {openingId === p.id ? 'Opening…' : 'Open'}
                     </button>
                     <button
                       onClick={(e) => handleDuplicate(p, e)}

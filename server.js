@@ -14,6 +14,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const server = createServer(app);
 app.disable('x-powered-by');
+app.use(express.json({ limit: '512kb' }));
 
 const port = Number(process.env.PORT || 3000);
 const host = '0.0.0.0';
@@ -486,6 +487,83 @@ wss.on('connection', (socket) => {
     if (session.clients.size === 0) {
       closeSession(session);
     }
+  });
+});
+
+// AI proxy — keeps API keys server-side
+app.post('/api/ai', async (req, res) => {
+  const { provider, model, messages: msgs, system } = req.body || {};
+
+  if (!provider || !model || !Array.isArray(msgs)) {
+    return res.status(400).json({ error: 'Missing provider, model, or messages' });
+  }
+
+  try {
+    if (provider === 'anthropic') {
+      const apiKey = process.env.ANTHROPIC_API_KEY;
+      if (!apiKey) return res.status(503).json({ error: 'Anthropic API key not configured on server' });
+
+      const upstream = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({ model, max_tokens: 4096, system, messages: msgs, stream: true }),
+      });
+
+      if (!upstream.ok) {
+        const err = await upstream.json().catch(() => ({}));
+        return res.status(upstream.status).json({ error: err.error?.message || 'Anthropic error' });
+      }
+
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      upstream.body.pipeTo(new WritableStream({
+        write(chunk) { res.write(chunk); },
+        close() { res.end(); },
+        abort(err) { res.destroy(err); },
+      }));
+
+    } else if (provider === 'openai') {
+      const apiKey = process.env.OPENAI_API_KEY;
+      if (!apiKey) return res.status(503).json({ error: 'OpenAI API key not configured on server' });
+
+      const upstream = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({ model, max_tokens: 4096, messages: msgs, stream: true }),
+      });
+
+      if (!upstream.ok) {
+        const err = await upstream.json().catch(() => ({}));
+        return res.status(upstream.status).json({ error: err.error?.message || 'OpenAI error' });
+      }
+
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      upstream.body.pipeTo(new WritableStream({
+        write(chunk) { res.write(chunk); },
+        close() { res.end(); },
+        abort(err) { res.destroy(err); },
+      }));
+
+    } else {
+      return res.status(400).json({ error: 'Unknown provider' });
+    }
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/ai/providers', (_req, res) => {
+  res.json({
+    anthropic: Boolean(process.env.ANTHROPIC_API_KEY),
+    openai: Boolean(process.env.OPENAI_API_KEY),
   });
 });
 

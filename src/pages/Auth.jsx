@@ -6,7 +6,6 @@ import {
   signInWithGoogle,
   signInWithEmail,
   signUpWithEmail,
-  initFirebase,
   isFirebaseReady,
 } from '../lib/firebase';
 import { useStore } from '../store';
@@ -36,7 +35,7 @@ function PasswordInput({ value, onChange, placeholder }) {
 export default function Auth() {
   const nav = useNavigate();
   const { setUser, notify } = useStore();
-  const [mode, setMode] = useState('login'); // 'login' | 'signup' | 'firebase'
+  const [mode, setMode] = useState('login'); // 'login' | 'signup'
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -48,19 +47,10 @@ export default function Auth() {
     confirm: '',
   });
 
-  const [fbConfig, setFbConfig] = useState({
-    apiKey: '',
-    authDomain: '',
-    projectId: '',
-    storageBucket: '',
-    messagingSenderId: '',
-    appId: '',
-  });
-
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
 
   const handleGoogleLogin = async () => {
-    if (!isFirebaseReady()) { setMode('firebase'); return; }
+    if (!isFirebaseReady()) { setError('Authentication is not configured on this deployment.'); return; }
     setLoading(true);
     setError('');
     try {
@@ -76,7 +66,7 @@ export default function Auth() {
 
   const handleLogin = async (e) => {
     e.preventDefault();
-    if (!isFirebaseReady()) { setMode('firebase'); return; }
+    if (!isFirebaseReady()) { setError('Authentication is not configured on this deployment.'); return; }
     if (!form.email || !form.password) { setError('Please fill in all fields.'); return; }
     setLoading(true);
     setError('');
@@ -93,7 +83,7 @@ export default function Auth() {
 
   const handleSignup = async (e) => {
     e.preventDefault();
-    if (!isFirebaseReady()) { setMode('firebase'); return; }
+    if (!isFirebaseReady()) { setError('Authentication is not configured on this deployment.'); return; }
     if (!form.firstName || !form.lastName || !form.email || !form.password || !form.confirm) {
       setError('Please fill in all fields.');
       return;
@@ -114,15 +104,6 @@ export default function Auth() {
       setError(friendlyError(e.code));
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleFirebaseInit = () => {
-    if (initFirebase(fbConfig)) {
-      setMode('login');
-      notify('Firebase connected!', 'success');
-    } else {
-      setError('Invalid Firebase config.');
     }
   };
 
@@ -149,39 +130,7 @@ export default function Auth() {
 
         <div className="bg-surface border border-border rounded-2xl p-8">
           <AnimatePresence mode="wait">
-            {mode === 'firebase' ? (
-              <motion.div key="firebase" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                <button onClick={() => setMode('login')} className="flex items-center gap-2 text-muted hover:text-white text-sm mb-6">
-                  <ArrowLeft size={14} /> Back
-                </button>
-                <h2 className="font-display text-xl font-700 mb-2">Firebase Setup</h2>
-                <p className="text-muted text-sm mb-6">
-                  Create a project at{' '}
-                  <a href="https://console.firebase.google.com" target="_blank" rel="noreferrer" className="text-white underline">
-                    console.firebase.google.com
-                  </a>{' '}and paste your config below.
-                </p>
-                <div className="space-y-3">
-                  {Object.keys(fbConfig).map(k => (
-                    <input
-                      key={k}
-                      type="text"
-                      placeholder={k}
-                      value={fbConfig[k]}
-                      onChange={e => setFbConfig(p => ({ ...p, [k]: e.target.value }))}
-                      className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm font-mono text-white placeholder-muted focus:outline-none focus:border-border-light"
-                    />
-                  ))}
-                </div>
-                {error && <p className="text-red-400 text-xs mt-3">{error}</p>}
-                <button
-                  onClick={handleFirebaseInit}
-                  className="w-full mt-4 bg-white text-black py-2.5 rounded-xl text-sm font-medium hover:bg-white/90 transition-colors"
-                >
-                  Connect Firebase
-                </button>
-              </motion.div>
-            ) : mode === 'login' ? (
+            {mode === 'login' ? (
               <motion.div key="login" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                 <div className="flex items-center gap-2 mb-7">
                   <div className="w-8 h-8 rounded-lg bg-white flex items-center justify-center">
@@ -307,14 +256,6 @@ export default function Auth() {
           </AnimatePresence>
         </div>
 
-        {mode !== 'firebase' && (
-          <p className="text-center mt-4 text-xs text-muted">
-            Using Firebase?{' '}
-            <button onClick={() => setMode('firebase')} className="text-white hover:underline">
-              Configure
-            </button>
-          </p>
-        )}
       </motion.div>
     </div>
   );
