@@ -160,11 +160,6 @@ export default function Landing() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
         >
-          <div className="inline-flex items-center gap-2 bg-white/5 border border-white/10 rounded-full px-4 py-1.5 text-xs text-muted mb-8">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-            Browser-based. No installs required.
-          </div>
-
           <h1 className="font-display text-6xl md:text-8xl font-800 tracking-tighter mb-6 leading-none">
             <span className="gradient-text">
               {typed}
