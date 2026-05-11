@@ -80,23 +80,11 @@ function getViewportWidth() {
 }
 
 function getHorizontalPanelLayout({ showPreview, showCollab, showWorkspace }) {
-  if (showPreview && showCollab && showWorkspace) {
-    return { editor: 38, preview: 28, collab: 16, workspace: 18 };
-  }
-  if (showPreview && showWorkspace) {
-    return { editor: 48, preview: 30, workspace: 22 };
-  }
   if (showPreview && showCollab) {
     return { editor: 50, preview: 32, collab: 18 };
   }
   if (showPreview) {
     return { editor: 55, preview: 45 };
-  }
-  if (showCollab && showWorkspace) {
-    return { editor: 56, collab: 20, workspace: 24 };
-  }
-  if (showWorkspace) {
-    return { editor: 74, workspace: 26 };
   }
   if (showCollab) {
     return { editor: 78, collab: 22 };
@@ -166,8 +154,6 @@ export default function Editor() {
   const titleRef = useRef(null);
   const editorRef = useRef(null);
   const leaveSessionRef = useRef(null);
-  const autosaveTimerRef = useRef(null);
-  const autosaveArmedRef = useRef(false);
 
   const activeFile = files.find(f => f.id === activeFileId);
   const horizontalLayout = useMemo(
@@ -189,6 +175,13 @@ export default function Editor() {
     sessionStorage.setItem(storageKey, created);
     return created;
   }, [project.id]);
+
+  const persistProjectSnapshot = useCallback(() => {
+    if (!isDirty) return;
+    const savedLocalProject = saveLocalProjectSnapshot(project, files);
+    setProject(savedLocalProject);
+    setDirty(false);
+  }, [files, isDirty, project, setDirty, setProject]);
 
   // Load shared or collab project from URL
   useEffect(() => {
@@ -457,10 +450,7 @@ export default function Editor() {
     return () => window.removeEventListener('keydown', handler);
   }, [project, files, showConsole, showTerminal, activeBottomTab]);
 
-  useEffect(() => {
-    setDirty(true);
-    autosaveArmedRef.current = true;
-  }, [files, setDirty]);
+  useEffect(() => { setDirty(true); }, [files, setDirty]);
 
   const handleSave = useCallback(async ({ silent = false } = {}) => {
     if (saving) return;
@@ -502,29 +492,19 @@ export default function Editor() {
   }, [project, user, saving, files, notify, setDirty, setProject]);
 
   useEffect(() => {
-    if (!autosaveArmedRef.current || !isDirty) return;
+    const handlePageHide = () => {
+      persistProjectSnapshot();
+    };
 
-    if (autosaveTimerRef.current) {
-      clearTimeout(autosaveTimerRef.current);
-    }
-
-    autosaveTimerRef.current = setTimeout(() => {
-      handleSave({ silent: true });
-    }, 1200);
+    window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('beforeunload', handlePageHide);
 
     return () => {
-      if (autosaveTimerRef.current) {
-        clearTimeout(autosaveTimerRef.current);
-        autosaveTimerRef.current = null;
-      }
+      window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('beforeunload', handlePageHide);
+      persistProjectSnapshot();
     };
-  }, [isDirty, files, project.title, user, handleSave]);
-
-  useEffect(() => () => {
-    if (autosaveTimerRef.current) {
-      clearTimeout(autosaveTimerRef.current);
-    }
-  }, []);
+  }, [persistProjectSnapshot]);
 
   const handleExport = async () => {
     try {
@@ -861,14 +841,6 @@ export default function Editor() {
                 </>
               )}
 
-              {showWorkspace && (
-                <>
-                  <PanelResizeHandle className="w-px bg-border hover:bg-white/20 transition-colors cursor-col-resize" />
-                  <Panel defaultSize={horizontalLayout.workspace} minSize={18} maxSize={36}>
-                    <WorkspacePanel workspaceId={workspaceId} files={files} projectTitle={project?.title} />
-                  </Panel>
-                </>
-              )}
             </PanelGroup>
           </div>
 
@@ -952,6 +924,30 @@ export default function Editor() {
 
       {/* Floating AI Panel */}
       {showAI && <AIFloatingPanel onClose={() => setShowAI(false)} />}
+
+      <AnimatePresence>
+        {showWorkspace && (
+          <>
+            <motion.button
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowWorkspace(false)}
+              className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px]"
+              aria-label="Close workspace panel"
+            />
+            <motion.div
+              initial={{ opacity: 0, x: 24 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 24 }}
+              transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+              className="fixed right-4 top-[76px] bottom-4 z-50 w-[min(420px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-border bg-bg shadow-2xl shadow-black/50"
+            >
+              <WorkspacePanel workspaceId={workspaceId} files={files} projectTitle={project?.title} />
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
       {/* Modals */}
       <AnimatePresence>

@@ -317,12 +317,7 @@ export default function WebTerminal({ onClose, isMaximized, onToggleMaximize, wo
     <div className="h-full flex flex-col bg-[#0a0a0a]">
       <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
         <div className="flex items-center gap-2 min-w-0">
-          <div className="flex gap-1.5 shrink-0">
-            <div className="w-3 h-3 rounded-full bg-red-500/70" />
-            <div className="w-3 h-3 rounded-full bg-yellow-500/70" />
-            <div className="w-3 h-3 rounded-full bg-green-500/70" />
-          </div>
-          <span className="text-xs text-muted font-mono ml-2">Terminal</span>
+          <span className="text-xs text-muted font-mono">Terminal</span>
           <span className="text-xs bg-white/5 text-muted/70 rounded px-1.5 py-0.5 font-mono">
             {sessionInfo?.shell || 'shell'}
           </span>

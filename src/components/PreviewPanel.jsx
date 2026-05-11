@@ -269,7 +269,6 @@ export default function PreviewPanel({ html, css, js, files, workspaceId }) {
       <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
         <div className="flex items-center gap-1.5">
           <div className={`w-2 h-2 rounded-full ${packageMode ? 'bg-sky-400' : 'bg-green-400'} animate-pulse`} />
-          <span className="text-xs text-muted font-mono">{packageMode ? `${workspaceKind.label} Preview` : 'Live Preview'}</span>
         </div>
         <div className="flex items-center gap-1">
           {packageMode && (
