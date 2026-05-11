@@ -21,6 +21,42 @@ export default function Landing() {
   const [strIdx, setStrIdx] = useState(0);
   const [charIdx, setCharIdx] = useState(0);
   const [deleting, setDeleting] = useState(false);
+  const [activeDemoTab, setActiveDemoTab] = useState('HTML');
+
+  const demoFiles = {
+    HTML: [
+      { indent: 0, tokens: [{ t: '<div', c: 'text-purple-400' }, { t: ' class', c: 'text-yellow-300' }, { t: '="hero">', c: 'text-muted' }] },
+      { indent: 1, tokens: [{ t: '<h1>', c: 'text-purple-400' }, { t: 'Hello, World!', c: 'text-white' }, { t: '</h1>', c: 'text-purple-400' }] },
+      { indent: 1, tokens: [{ t: '<p>', c: 'text-purple-400' }, { t: 'Build something amazing', c: 'text-muted' }, { t: '</p>', c: 'text-purple-400' }] },
+      { indent: 1, tokens: [{ t: '<button', c: 'text-purple-400' }, { t: ' onclick', c: 'text-yellow-300' }, { t: '="go()">', c: 'text-muted' }] },
+      { indent: 2, tokens: [{ t: 'Get Started', c: 'text-white' }] },
+      { indent: 1, tokens: [{ t: '</button>', c: 'text-purple-400' }] },
+      { indent: 0, tokens: [{ t: '</div>', c: 'text-purple-400' }] },
+    ],
+    CSS: [
+      { indent: 0, tokens: [{ t: '.hero', c: 'text-purple-400' }, { t: ' {', c: 'text-white' }] },
+      { indent: 1, tokens: [{ t: 'display', c: 'text-yellow-300' }, { t: ': ', c: 'text-white' }, { t: 'grid', c: 'text-green-400' }, { t: ';', c: 'text-white' }] },
+      { indent: 1, tokens: [{ t: 'place-items', c: 'text-yellow-300' }, { t: ': ', c: 'text-white' }, { t: 'center', c: 'text-green-400' }, { t: ';', c: 'text-white' }] },
+      { indent: 1, tokens: [{ t: 'gap', c: 'text-yellow-300' }, { t: ': ', c: 'text-white' }, { t: '12px', c: 'text-green-400' }, { t: ';', c: 'text-white' }] },
+      { indent: 1, tokens: [{ t: 'padding', c: 'text-yellow-300' }, { t: ': ', c: 'text-white' }, { t: '32px', c: 'text-green-400' }, { t: ';', c: 'text-white' }] },
+      { indent: 0, tokens: [{ t: '}', c: 'text-white' }] },
+      { indent: 0, tokens: [] },
+      { indent: 0, tokens: [{ t: 'button', c: 'text-purple-400' }, { t: ' {', c: 'text-white' }] },
+      { indent: 1, tokens: [{ t: 'border-radius', c: 'text-yellow-300' }, { t: ': ', c: 'text-white' }, { t: '12px', c: 'text-green-400' }, { t: ';', c: 'text-white' }] },
+      { indent: 1, tokens: [{ t: 'background', c: 'text-yellow-300' }, { t: ': ', c: 'text-white' }, { t: '#fff', c: 'text-green-400' }, { t: ';', c: 'text-white' }] },
+      { indent: 0, tokens: [{ t: '}', c: 'text-white' }] },
+    ],
+    JS: [
+      { indent: 0, tokens: [{ t: 'const ', c: 'text-purple-400' }, { t: 'button', c: 'text-blue-400' }, { t: ' = ', c: 'text-white' }, { t: 'document', c: 'text-green-400' }, { t: '.querySelector(', c: 'text-white' }, { t: '\'button\'', c: 'text-yellow-300' }, { t: ');', c: 'text-white' }] },
+      { indent: 0, tokens: [] },
+      { indent: 0, tokens: [{ t: 'function ', c: 'text-purple-400' }, { t: 'go', c: 'text-blue-400' }, { t: '() {', c: 'text-white' }] },
+      { indent: 1, tokens: [{ t: 'button', c: 'text-blue-400' }, { t: '.textContent = ', c: 'text-white' }, { t: '\'Launching...\'', c: 'text-yellow-300' }, { t: ';', c: 'text-white' }] },
+      { indent: 1, tokens: [{ t: 'button', c: 'text-blue-400' }, { t: '.style.transform = ', c: 'text-white' }, { t: '\'translateY(-1px)\'', c: 'text-yellow-300' }, { t: ';', c: 'text-white' }] },
+      { indent: 0, tokens: [{ t: '}', c: 'text-white' }] },
+      { indent: 0, tokens: [] },
+      { indent: 0, tokens: [{ t: 'button', c: 'text-blue-400' }, { t: '.addEventListener(', c: 'text-white' }, { t: '\'click\'', c: 'text-yellow-300' }, { t: ', go);', c: 'text-white' }] },
+    ],
+  };
 
   useEffect(() => {
     const target = TYPING_STRINGS[strIdx];
@@ -209,8 +245,19 @@ export default function Landing() {
               <div className="w-3 h-3 rounded-full bg-green-500/70" />
             </div>
             <div className="flex gap-1 ml-2">
-              {['HTML', 'CSS', 'JS'].map(t => (
-                <div key={t} className={`text-xs px-3 py-1 rounded font-mono ${t === 'HTML' ? 'bg-white/10 text-white' : 'text-muted'}`}>{t}</div>
+              {Object.keys(demoFiles).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setActiveDemoTab(tab)}
+                  className={`text-xs px-3 py-1 rounded font-mono transition-colors ${
+                    tab === activeDemoTab
+                      ? 'bg-white/10 text-white'
+                      : 'text-muted hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  {tab}
+                </button>
               ))}
             </div>
             {/* Fake collab avatars */}
@@ -225,19 +272,15 @@ export default function Landing() {
           {/* Fake editor split */}
           <div className="flex h-80 bg-[#0d0d0d]">
             <div className="flex-1 p-6 font-mono text-xs text-muted leading-6 border-r border-border overflow-hidden">
-              <div><span className="text-purple-400">{'<div'}</span> <span className="text-yellow-300">class</span><span className="text-muted">{"=\""}</span><span className="text-green-400">hero</span><span className="text-muted">{"\">"}</span></div>
-              <div className="ml-4"><span className="text-purple-400">{'<h1>'}</span><span className="text-white">Hello, World!</span><span className="text-purple-400">{'</h1>'}</span></div>
-              <div className="ml-4"><span className="text-purple-400">{'<p>'}</span><span className="text-muted">Build something amazing</span><span className="text-purple-400">{'</p>'}</span></div>
-              <div className="ml-4"><span className="text-purple-400">{'<button'}</span> <span className="text-yellow-300">onclick</span><span className="text-muted">{"=\""}</span><span className="text-blue-400">go()</span><span className="text-muted">{"\">"}</span></div>
-              <div className="ml-8 text-white">Get Started</div>
-              <div className="ml-4"><span className="text-purple-400">{'</button>'}</span></div>
-              <div><span className="text-purple-400">{'</div>'}</span></div>
-              <div className="mt-4 text-white/20">{'·'.repeat(30)}</div>
-              <div className="mt-2 opacity-40">
-                <div><span className="text-purple-400">.hero</span> {'{'}</div>
-                <div className="ml-4"><span className="text-yellow-300">display</span>: <span className="text-green-400">flex</span>;</div>
-                <div>{'}'}</div>
-              </div>
+              {demoFiles[activeDemoTab].map((line, index) => (
+                <div key={`${activeDemoTab}-${index}`} className={line.tokens.length === 0 ? 'h-6' : ''} style={{ marginLeft: `${line.indent * 16}px` }}>
+                  {line.tokens.map((token, tokenIndex) => (
+                    <span key={`${activeDemoTab}-${index}-${tokenIndex}`} className={token.c}>
+                      {token.t}
+                    </span>
+                  ))}
+                </div>
+              ))}
             </div>
             <div className="w-80 bg-[#0f0f0f] flex items-center justify-center text-center p-8">
               <div>
