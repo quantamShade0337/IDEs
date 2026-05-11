@@ -166,6 +166,8 @@ export default function Editor() {
   const titleRef = useRef(null);
   const editorRef = useRef(null);
   const leaveSessionRef = useRef(null);
+  const autosaveTimerRef = useRef(null);
+  const autosaveArmedRef = useRef(false);
 
   const activeFile = files.find(f => f.id === activeFileId);
   const horizontalLayout = useMemo(
@@ -455,21 +457,24 @@ export default function Editor() {
     return () => window.removeEventListener('keydown', handler);
   }, [project, files, showConsole, showTerminal, activeBottomTab]);
 
-  useEffect(() => { setDirty(true); }, [files]);
+  useEffect(() => {
+    setDirty(true);
+    autosaveArmedRef.current = true;
+  }, [files, setDirty]);
 
-  const handleSave = useCallback(async () => {
+  const handleSave = useCallback(async ({ silent = false } = {}) => {
     if (saving) return;
     if (!user || user.isGuest) {
       const savedLocalProject = saveLocalProjectSnapshot(project, files);
       setProject(savedLocalProject);
-      notify('Saved locally', 'info');
+      if (!silent) notify('Saved locally', 'info');
       setDirty(false);
       return;
     }
     if (!isFirebaseReady()) {
       const savedLocalProject = saveLocalProjectSnapshot(project, files);
       setProject(savedLocalProject);
-      notify('Saved locally (Firebase not configured)', 'info');
+      if (!silent) notify('Saved locally (Firebase not configured)', 'info');
       setDirty(false);
       return;
     }
@@ -488,13 +493,38 @@ export default function Editor() {
       });
       setProject({ ...project, id: result });
       setDirty(false);
-      notify('Project saved!', 'success');
+      if (!silent) notify('Project saved!', 'success');
     } catch (e) {
-      notify(e.message, 'error');
+      notify(silent ? `Autosave failed: ${e.message}` : e.message, 'error');
     } finally {
       setSaving(false);
     }
-  }, [project, user, saving]);
+  }, [project, user, saving, files, notify, setDirty, setProject]);
+
+  useEffect(() => {
+    if (!autosaveArmedRef.current || !isDirty) return;
+
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+    }
+
+    autosaveTimerRef.current = setTimeout(() => {
+      handleSave({ silent: true });
+    }, 1200);
+
+    return () => {
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+    };
+  }, [isDirty, files, project.title, user, handleSave]);
+
+  useEffect(() => () => {
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+    }
+  }, []);
 
   const handleExport = async () => {
     try {
