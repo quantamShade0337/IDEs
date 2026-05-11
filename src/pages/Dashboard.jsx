@@ -5,7 +5,18 @@ import {
   Plus, Code2, Trash2, Copy, Clock, LogOut, User,
   FolderOpen, Search, X, FileCode, Globe, Zap, Grid3X3,
 } from 'lucide-react';
-import { subscribeProjects, loadProject, deleteProject, saveProject, signOutUser, isFirebaseReady } from '../lib/firebase';
+import {
+  subscribeProjects,
+  loadProject,
+  deleteProject,
+  saveProject,
+  signOutUser,
+  isFirebaseReady,
+  loadLocalProjects,
+  loadLocalProject,
+  deleteLocalProject,
+  saveLocalProjectSnapshot,
+} from '../lib/firebase';
 import { useStore } from '../store';
 
 function timeAgo(ts) {
@@ -64,6 +75,281 @@ const TEMPLATES = [
     js: 'console.log("Ready!");',
   },
   {
+    id: 'react',
+    title: 'React App',
+    description: 'Server-backed React + Vite starter',
+    icon: Code2,
+    files: [
+      {
+        id: 'src/main.jsx',
+        name: 'src/main.jsx',
+        language: 'javascript',
+        content: `import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App.jsx';
+import './styles.css';
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+`,
+      },
+      {
+        id: 'src/App.jsx',
+        name: 'src/App.jsx',
+        language: 'javascript',
+        content: `export default function App() {
+  return (
+    <div className="app">
+      <h1>Hello from React</h1>
+      <p>Edit <code>src/App.jsx</code> to get started.</p>
+    </div>
+  );
+}
+`,
+      },
+      {
+        id: 'src/styles.css',
+        name: 'src/styles.css',
+        language: 'css',
+        content: `:root {
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #f5f5f5;
+  background: #09090b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #09090b;
+}
+
+.app {
+  min-height: 100vh;
+  display: grid;
+  place-content: center;
+  gap: 12px;
+  padding: 32px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 2rem;
+}
+
+p {
+  margin: 0;
+  color: #a1a1aa;
+}
+
+code {
+  font-family: "JetBrains Mono", monospace;
+}
+`,
+      },
+      {
+        id: 'package.json',
+        name: 'package.json',
+        language: 'json',
+        content: `{
+  "name": "webide-react-app",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 4173",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 4173"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.0",
+    "vite": "^8.0.0"
+  }
+}`,
+      },
+      {
+        id: 'vite.config.js',
+        name: 'vite.config.js',
+        language: 'javascript',
+        content: `import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+});
+`,
+      },
+      {
+        id: 'index.html',
+        name: 'index.html',
+        language: 'html',
+        content: `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>React App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.jsx"></script>
+  </body>
+</html>
+`,
+      },
+    ],
+  },
+  {
+    id: 'next',
+    title: 'Next.js App',
+    description: 'Minimal App Router starter',
+    icon: Globe,
+    files: [
+      {
+        id: 'app/page.jsx',
+        name: 'app/page.jsx',
+        language: 'javascript',
+        content: `export default function HomePage() {
+  return (
+    <main>
+      <h1>Hello from Next.js</h1>
+      <p>Edit <code>app/page.jsx</code> to get started.</p>
+    </main>
+  );
+}
+`,
+      },
+      {
+        id: 'app/layout.jsx',
+        name: 'app/layout.jsx',
+        language: 'javascript',
+        content: `import './globals.css';
+
+export const metadata = {
+  title: 'Next App',
+  description: 'Created in WebIDE',
+};
+
+export default function RootLayout({ children }) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+`,
+      },
+      {
+        id: 'app/globals.css',
+        name: 'app/globals.css',
+        language: 'css',
+        content: `* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #09090b;
+  color: #f5f5f5;
+}
+
+main {
+  min-height: 100vh;
+  display: grid;
+  place-content: center;
+  gap: 12px;
+  padding: 32px;
+}
+
+h1, p {
+  margin: 0;
+}
+
+p {
+  color: #a1a1aa;
+}
+`,
+      },
+      {
+        id: 'package.json',
+        name: 'package.json',
+        language: 'json',
+        content: `{
+  "name": "webide-next-app",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "^16.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  }
+}`,
+      },
+    ],
+  },
+  {
+    id: 'node',
+    title: 'Node.js Server',
+    description: 'Minimal Express starter',
+    icon: Zap,
+    files: [
+      {
+        id: 'server.js',
+        name: 'server.js',
+        language: 'javascript',
+        content: `import express from 'express';
+
+const app = express();
+const port = Number(process.env.PORT || 3000);
+
+app.get('/', (_req, res) => {
+  res.send('Hello from Node.js');
+});
+
+app.listen(port, '0.0.0.0', () => {
+  console.log(\`Server listening on http://0.0.0.0:\${port}\`);
+});
+`,
+      },
+      {
+        id: 'package.json',
+        name: 'package.json',
+        language: 'json',
+        content: `{
+  "name": "webide-node-app",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}`,
+      },
+    ],
+  },
+  {
     id: 'landing',
     title: 'Landing Page',
     description: 'Hero + CTA + features',
@@ -106,7 +392,11 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!user) { nav('/auth'); return; }
-    if (user.isGuest) { setLoading(false); return; }
+    if (user.isGuest || !isFirebaseReady()) {
+      setProjects(loadLocalProjects());
+      setLoading(false);
+      return;
+    }
     // Real-time listener — updates dashboard whenever a project is saved or deleted
     const unsub = subscribeProjects(user.uid, (p) => {
       setProjects(p);
@@ -129,7 +419,7 @@ export default function Dashboard() {
   };
 
   const handleTemplate = (template) => {
-    const files = [
+    const files = template.files || [
       { id: 'index.html', name: 'index.html', language: 'html', content: template.html },
       { id: 'styles.css', name: 'styles.css', language: 'css', content: template.css },
       { id: 'script.js', name: 'script.js', language: 'javascript', content: template.js },
@@ -144,7 +434,9 @@ export default function Dashboard() {
   const handleOpen = async (p) => {
     setOpeningId(p.id);
     let full = p;
-    if (p.id && isFirebaseReady()) {
+    if (String(p.id || '').startsWith('local-')) {
+      full = loadLocalProject(p.id) || p;
+    } else if (p.id && isFirebaseReady()) {
       try {
         const loaded = await loadProject(p.id);
         if (loaded) full = loaded;
@@ -161,7 +453,11 @@ export default function Dashboard() {
   };
 
   const handleDelete = async (id) => {
-    await deleteProject(id);
+    if (String(id || '').startsWith('local-') || !isFirebaseReady() || user?.isGuest) {
+      deleteLocalProject(id);
+    } else {
+      await deleteProject(id);
+    }
     setProjects(ps => ps.filter(p => p.id !== id));
     setDeleteConfirm(null);
     notify('Project deleted', 'info');
@@ -170,8 +466,18 @@ export default function Dashboard() {
   const handleDuplicate = async (p, e) => {
     e.stopPropagation();
     try {
-      const id = await saveProject({ ...p, id: null, title: `${p.title} (copy)`, userId: user.uid });
-      const newP = { ...p, id, title: `${p.title} (copy)` };
+      let newP;
+      if (user?.isGuest || !isFirebaseReady() || String(p.id || '').startsWith('local-')) {
+        const full = loadLocalProject(p.id) || p;
+        newP = saveLocalProjectSnapshot(
+          { ...full, id: null, title: `${p.title} (copy)` },
+          full.files || []
+        );
+      } else {
+        const full = await loadProject(p.id) || p;
+        const id = await saveProject({ ...full, id: null, title: `${p.title} (copy)`, userId: user.uid });
+        newP = { ...full, id, title: `${p.title} (copy)` };
+      }
       setProjects(ps => [newP, ...ps]);
       notify('Project duplicated', 'success');
     } catch (err) {

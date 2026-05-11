@@ -55,6 +55,7 @@ export default function Auth() {
     setError('');
     try {
       const result = await signInWithGoogle();
+      localStorage.removeItem('webide_guest_session');
       setUser(result.user);
       nav('/dashboard');
     } catch (e) {
@@ -72,6 +73,7 @@ export default function Auth() {
     setError('');
     try {
       const result = await signInWithEmail(form.email, form.password);
+      localStorage.removeItem('webide_guest_session');
       setUser(result.user);
       nav('/dashboard');
     } catch (e) {
@@ -98,6 +100,7 @@ export default function Auth() {
         form.password,
         `${form.firstName} ${form.lastName}`
       );
+      localStorage.removeItem('webide_guest_session');
       setUser(result.user);
       nav('/dashboard');
     } catch (e) {
@@ -108,6 +111,7 @@ export default function Auth() {
   };
 
   const handleGuest = () => {
+    localStorage.setItem('webide_guest_session', 'true');
     setUser({ uid: 'guest', displayName: 'Guest', isGuest: true });
     nav('/dashboard');
   };

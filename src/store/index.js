@@ -76,6 +76,73 @@ const DEFAULT_FILES = [
   { id: 'script.js', name: 'script.js', language: 'javascript', content: DEFAULT_JS },
 ];
 
+function isReactProjectFiles(files = []) {
+  const names = files.map((file) => file.name.toLowerCase());
+  if (names.includes('src/main.jsx') || names.includes('src/main.tsx')) return true;
+  if (names.includes('src/app.jsx') || names.includes('src/app.tsx')) return true;
+  if (names.includes('package.json')) {
+    const pkg = files.find((file) => file.name === 'package.json');
+    return /"react"\s*:/.test(pkg?.content || '');
+  }
+  return false;
+}
+
+function normalizeComponentName(name = '') {
+  const cleaned = String(name)
+    .replace(/[^a-zA-Z0-9/_-\s]/g, ' ')
+    .split(/[\/\\]/)
+    .map((segment) => segment
+      .trim()
+      .split(/[\s_-]+/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(''))
+    .filter(Boolean);
+
+  return cleaned.join('/');
+}
+
+function createComponentScaffold(name, includeCss = true) {
+  const normalized = normalizeComponentName(name);
+  if (!normalized) return null;
+
+  const segments = normalized.split('/');
+  const componentName = segments[segments.length - 1];
+  const componentDir = segments.length > 1 ? `${segments.slice(0, -1).join('/')}/` : '';
+  const basePath = `src/components/${componentDir}${componentName}`;
+  const cssImportPath = includeCss ? `./${componentName}.css` : null;
+  const className = componentName
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .toLowerCase();
+
+  const jsx = `import React from 'react';
+${includeCss ? `import '${cssImportPath}';\n` : ''}
+export default function ${componentName}() {
+  return <div className="${className}"></div>;
+}
+`;
+
+  const css = `.${className} {\n}\n`;
+
+  return {
+    componentName,
+    files: [
+      {
+        id: `${basePath}.jsx`,
+        name: `${basePath}.jsx`,
+        language: 'javascript',
+        content: jsx,
+      },
+      ...(includeCss ? [{
+        id: `${basePath}.css`,
+        name: `${basePath}.css`,
+        language: 'css',
+        content: css,
+      }] : []),
+    ],
+  };
+}
+
 function getLanguage(filename) {
   const ext = filename.split('.').pop().toLowerCase();
   const map = {
@@ -88,7 +155,7 @@ function getLanguage(filename) {
   return map[ext] || 'plaintext';
 }
 
-export { getLanguage, DEFAULT_FILES };
+export { getLanguage, DEFAULT_FILES, isReactProjectFiles, normalizeComponentName, createComponentScaffold };
 
 export const useStore = create((set, get) => ({
   // ── Auth ──────────────────────────────────────────────────────────────
@@ -116,6 +183,64 @@ export const useStore = create((set, get) => ({
   activeFileId: 'index.html',
   setFiles: (files) => set({ files }),
   setActiveFileId: (id) => set({ activeFileId: id }),
+  importFiles: (incomingFiles, options = {}) => {
+    const replace = options.replace === true;
+    const projectTitle = options.projectTitle;
+
+    const normalized = (Array.isArray(incomingFiles) ? incomingFiles : [])
+      .filter((file) => typeof file?.name === 'string' && typeof file?.content === 'string')
+      .map((file, index) => ({
+        id: file.id || `import-${Date.now()}-${index}-${file.name}`,
+        name: file.name.replace(/^\/+/, ''),
+        language: file.language || getLanguage(file.name),
+        content: file.content,
+      }))
+      .filter((file) => file.name && !file.name.includes('..'));
+
+    if (normalized.length === 0) return null;
+
+    const preferredActive = normalized.find((file) =>
+      /(^|\/)(index\.html|src\/main\.(jsx|tsx|js|ts)|src\/app\.(jsx|tsx|js|ts)|app\/page\.(jsx|tsx|js|ts))$/i.test(file.name)
+    ) || normalized[0];
+
+    set((state) => {
+      if (replace) {
+        return {
+          files: normalized,
+          activeFileId: preferredActive.id,
+          project: projectTitle ? { ...state.project, title: projectTitle } : state.project,
+          isDirty: true,
+        };
+      }
+
+      const existingByName = new Map(state.files.map((file) => [file.name, file]));
+      const merged = [...state.files];
+
+      normalized.forEach((file) => {
+        const existing = existingByName.get(file.name);
+        if (existing) {
+          const position = merged.findIndex((entry) => entry.id === existing.id);
+          merged[position] = {
+            ...existing,
+            language: file.language,
+            content: file.content,
+          };
+          return;
+        }
+
+        merged.push(file);
+      });
+
+      return {
+        files: merged,
+        activeFileId: preferredActive.id,
+        project: projectTitle ? { ...state.project, title: projectTitle } : state.project,
+        isDirty: true,
+      };
+    });
+
+    return preferredActive.id;
+  },
 
   addFile: (name, initialContent) => {
     const id = `${Date.now()}-${name}`;
@@ -132,6 +257,25 @@ export const useStore = create((set, get) => ({
     const newFile = { id, name, language: lang, content };
     set((s) => ({ files: [...s.files, newFile], activeFileId: id }));
     return id;
+  },
+
+  createComponent: (name, options = {}) => {
+    const includeCss = options.includeCss !== false;
+    const scaffold = createComponentScaffold(name, includeCss);
+    if (!scaffold) return { ok: false, error: 'Invalid component name.' };
+
+    const { files } = get();
+    const existingNames = new Set(files.map((file) => file.name.toLowerCase()));
+    if (scaffold.files.some((file) => existingNames.has(file.name.toLowerCase()))) {
+      return { ok: false, error: 'A component with that name already exists.' };
+    }
+
+    set((state) => ({
+      files: [...state.files, ...scaffold.files],
+      activeFileId: scaffold.files[0].id,
+    }));
+
+    return { ok: true, componentName: scaffold.componentName, fileIds: scaffold.files.map((file) => file.id) };
   },
 
   updateFileContent: (id, content) => {

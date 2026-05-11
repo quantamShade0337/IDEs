@@ -1,13 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Users, MessageSquare, Link2, Copy, Check, Send,
-  Wifi, WifiOff, Crown, Circle,
+  Users, MessageSquare, Copy, Check, Send,
+  Wifi, WifiOff, Crown, Circle, Activity, Rocket, TerminalSquare, FileCode,
 } from 'lucide-react';
 import {
   subscribePresence, subscribeChat, sendChatMessage,
   createCollabSession, endCollabSession, subscribeCollabSession,
-  getColor,
+  subscribeActivity, logCollabEvent,
 } from '../lib/collaboration';
 import { useStore } from '../store';
 import { isFirebaseReady } from '../lib/firebase';
@@ -54,14 +53,72 @@ function ChatMessage({ msg, isMe }) {
   );
 }
 
-export default function CollaborationPanel({ projectId }) {
+function ActivityItem({ event, isMe }) {
+  const time = event.createdAt?.toDate
+    ? event.createdAt.toDate().toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', hour12: false })
+    : '';
+  const actor = isMe ? 'You' : (event.displayName || 'Someone');
+
+  let icon = Activity;
+  let message = `${actor} updated the session`;
+
+  if (event.type === 'session.joined') {
+    icon = Wifi;
+    message = `${actor} joined the session`;
+  } else if (event.type === 'session.started') {
+    icon = Crown;
+    message = `${actor} started the session`;
+  } else if (event.type === 'session.left') {
+    icon = WifiOff;
+    message = `${actor} left the session`;
+  } else if (event.type === 'session.ended') {
+    icon = Crown;
+    message = `${actor} ended the session`;
+  } else if (event.type === 'runtime.action') {
+    icon = TerminalSquare;
+    const action = event.details?.action || 'updated';
+    const framework = event.details?.framework || 'workspace';
+    const actionLabel = action === 'start' ? 'started' : action === 'stop' ? 'stopped' : action === 'restart' ? 'restarted' : `${action}ed`;
+    message = `${actor} ${actionLabel} the ${framework} runtime`;
+  } else if (event.type === 'task.started') {
+    icon = TerminalSquare;
+    message = `${actor} ran ${event.details?.label || event.details?.task || 'a workspace task'}`;
+  } else if (event.type === 'deploy.completed') {
+    icon = Rocket;
+    message = `${actor} deployed ${event.details?.slug ? `/${event.details.slug}` : 'the project'}`;
+  } else if (event.type === 'file.updated') {
+    icon = FileCode;
+    message = `${actor} updated ${event.details?.fileName || 'an important file'}`;
+  }
+
+  const Icon = icon;
+
+  return (
+    <div className="rounded-xl border border-border bg-surface px-3 py-3">
+      <div className="flex items-start gap-2">
+        <div className="mt-0.5 rounded-full bg-white/5 p-1.5 text-muted">
+          <Icon size={12} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-white">{message}</p>
+          <p className="mt-1 text-[11px] text-muted">
+            {time}
+            {event.type === 'runtime.action' && event.details?.port ? ` · port ${event.details.port}` : ''}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function CollaborationPanel({ projectId, files = [] }) {
   const { user, notify } = useStore();
-  const [tab, setTab] = useState('people'); // people | chat
+  const [tab, setTab] = useState('people'); // people | activity | chat
   const [activeUsers, setActiveUsers] = useState([]);
   const [messages, setMessages] = useState([]);
+  const [events, setEvents] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [session, setSession] = useState(null);
-  const [sessionActive, setSessionActive] = useState(false);
   const [copied, setCopied] = useState(false);
   const [sending, setSending] = useState(false);
   const chatBottomRef = useRef(null);
@@ -74,6 +131,7 @@ export default function CollaborationPanel({ projectId }) {
       subscribePresence(projectId, setActiveUsers),
       subscribeChat(projectId, setMessages),
       subscribeCollabSession(projectId, setSession),
+      subscribeActivity(projectId, setEvents),
     ];
     return () => unsubs.forEach(u => u());
   }, [projectId, firebaseReady]);
@@ -96,7 +154,7 @@ export default function CollaborationPanel({ projectId }) {
     }
     try {
       await createCollabSession(projectId, user.uid);
-      setSessionActive(true);
+      await logCollabEvent(projectId, user, 'session.started');
       notify('Collaboration session started!', 'success');
     } catch (e) {
       notify(e.message, 'error');
@@ -105,8 +163,7 @@ export default function CollaborationPanel({ projectId }) {
 
   const handleEndSession = async () => {
     try {
-      await endCollabSession(projectId);
-      setSessionActive(false);
+      await endCollabSession(projectId, user);
       notify('Session ended', 'info');
     } catch (e) {
       notify(e.message, 'error');
@@ -139,6 +196,7 @@ export default function CollaborationPanel({ projectId }) {
 
   const isSessionOwner = session?.ownerId === user?.uid;
   const collabActive = session?.active;
+  const fileNamesById = Object.fromEntries(files.map((file) => [file.id, file.name]));
 
   return (
     <div className="h-full flex flex-col bg-bg">
@@ -173,6 +231,7 @@ export default function CollaborationPanel({ projectId }) {
       <div className="flex border-b border-border shrink-0">
         {[
           { id: 'people', icon: Users, label: 'People' },
+          { id: 'activity', icon: Activity, label: 'Activity', badge: events.length },
           { id: 'chat', icon: MessageSquare, label: 'Chat', badge: messages.length },
         ].map(t => (
           <button
@@ -273,10 +332,41 @@ export default function CollaborationPanel({ projectId }) {
                           <Circle size={6} className="text-green-400 fill-green-400" />
                           <span className="text-xs text-muted/60">Online</span>
                         </div>
+                        {(u.activeFileId || u.cursor?.line) && (
+                          <div className="mt-1 text-[11px] text-muted/70">
+                            {u.activeFileId && fileNamesById[u.activeFileId]
+                              ? `Editing ${fileNamesById[u.activeFileId]}`
+                              : 'Active in editor'}
+                            {u.cursor?.line ? ` · Ln ${u.cursor.line}` : ''}
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === 'activity' && (
+          <div className="flex-1 overflow-y-auto p-4">
+            {!firebaseReady || !projectId ? (
+              <div className="flex items-center justify-center h-full text-muted text-xs text-center px-4">
+                {!firebaseReady ? 'Configure Firebase to enable shared activity' : 'Save project to enable shared activity'}
+              </div>
+            ) : events.length === 0 ? (
+              <div className="flex items-center justify-center h-full">
+                <div className="text-center">
+                  <Activity size={24} className="text-muted mx-auto mb-2" />
+                  <p className="text-xs text-muted">No collaboration activity yet</p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {events.map((event) => (
+                  <ActivityItem key={event.id} event={event} isMe={event.uid === user?.uid} />
+                ))}
               </div>
             )}
           </div>

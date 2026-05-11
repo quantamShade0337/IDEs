@@ -20,11 +20,32 @@ function AuthListener() {
         const { onAuthStateChanged } = await import('firebase/auth');
         const auth = getAuth_();
         if (auth) {
-          unsub = onAuthStateChanged(auth, (u) => setUser(u || null));
+          unsub = onAuthStateChanged(auth, (u) => {
+            if (u) {
+              localStorage.removeItem('webide_guest_session');
+              setUser(u);
+              return;
+            }
+
+            if (localStorage.getItem('webide_guest_session') === 'true') {
+              setUser({ uid: 'guest', displayName: 'Guest', isGuest: true });
+              return;
+            }
+
+            setUser(null);
+          });
         } else {
+          if (localStorage.getItem('webide_guest_session') === 'true') {
+            setUser({ uid: 'guest', displayName: 'Guest', isGuest: true });
+            return;
+          }
           setAuthLoading(false);
         }
       } catch {
+        if (localStorage.getItem('webide_guest_session') === 'true') {
+          setUser({ uid: 'guest', displayName: 'Guest', isGuest: true });
+          return;
+        }
         setAuthLoading(false);
       }
     };

@@ -32,6 +32,9 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 
+const LOCAL_PROJECTS_KEY = 'webide_local_projects_v1';
+const LAST_PROJECT_KEY = 'webide_last_project_v1';
+
 const envFirebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
@@ -104,6 +107,7 @@ export const signOutUser = async () => {
 export const saveProject = async (project) => {
   if (!db) throw new Error('Firebase not initialized');
   const { id, files, ...data } = project;
+  const remoteId = id && !String(id).startsWith('local-') ? id : null;
   const THUMBNAIL_LIMIT = 8000;
   const payload = {
     ...data,
@@ -118,9 +122,9 @@ export const saveProject = async (project) => {
     ),
   };
 
-  let projectId = id;
-  if (id) {
-    await updateDoc(doc(db, 'projects', id), payload);
+  let projectId = remoteId;
+  if (remoteId) {
+    await updateDoc(doc(db, 'projects', remoteId), payload);
   } else {
     const ref = await addDoc(collection(db, 'projects'), {
       ...payload,
@@ -130,13 +134,22 @@ export const saveProject = async (project) => {
   }
 
   // Save files sub-collection if provided
-  if (files && files.length > 0 && projectId) {
-    for (const file of files) {
+  if (projectId) {
+    const nextFiles = Array.isArray(files) ? files : [];
+    const existingFilesSnap = await getDocs(collection(db, 'projects', projectId, 'files'));
+    const nextIds = new Set(nextFiles.map((file) => file.id));
+
+    await Promise.all(existingFilesSnap.docs
+      .filter((entry) => !nextIds.has(entry.id))
+      .map((entry) => deleteDoc(entry.ref)));
+
+    for (const file of nextFiles) {
       const fileRef = doc(db, 'projects', projectId, 'files', file.id);
       await setDoc(fileRef, {
         name: file.name,
         language: file.language,
         content: file.content,
+        order: nextFiles.findIndex((entry) => entry.id === file.id),
         updatedAt: serverTimestamp(),
       }, { merge: true });
     }
@@ -189,7 +202,9 @@ export const loadProject = async (id) => {
   try {
     const filesSnap = await getDocs(collection(db, 'projects', id, 'files'));
     if (!filesSnap.empty) {
-      project.files = filesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      project.files = filesSnap.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER));
     }
   } catch { /* files collection may not exist */ }
 
@@ -215,17 +230,104 @@ async function deleteProjectTree(projectId) {
   const filesRef = collection(db, 'projects', projectId, 'files');
   const presenceRef = collection(db, 'projects', projectId, 'presence');
   const chatRef = collection(db, 'projects', projectId, 'chat');
+  const activityRef = collection(db, 'projects', projectId, 'activity');
   const collabSessionRef = doc(db, 'projects', projectId, 'collab', 'session');
 
   await Promise.all([
     deleteCollectionDocs(db, filesRef),
     deleteCollectionDocs(db, presenceRef),
     deleteCollectionDocs(db, chatRef),
+    deleteCollectionDocs(db, activityRef),
     deleteDoc(collabSessionRef).catch(() => {}),
   ]);
 
   await deleteDoc(projectRef);
 }
+
+function sortLocalProjects(projects = []) {
+  return [...projects].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+}
+
+function readLocalProjects() {
+  try {
+    return JSON.parse(localStorage.getItem(LOCAL_PROJECTS_KEY) || '[]');
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalProjects(projects = []) {
+  localStorage.setItem(LOCAL_PROJECTS_KEY, JSON.stringify(sortLocalProjects(projects)));
+}
+
+function createProjectSnapshot(project, files = []) {
+  const safeFiles = Array.isArray(files)
+    ? files.map((file) => ({
+        id: file.id,
+        name: file.name,
+        language: file.language,
+        content: file.content,
+      }))
+    : [];
+
+  const htmlFile = safeFiles.find((file) => file.name.endsWith('.html') || file.name.endsWith('.htm'));
+  const cssFile = safeFiles.find((file) => file.name.endsWith('.css'));
+  const jsFile = safeFiles.find((file) => file.name.endsWith('.js') || file.name.endsWith('.jsx'));
+
+  return {
+    ...project,
+    files: safeFiles,
+    html: htmlFile?.content ?? project.html ?? '',
+    css: cssFile?.content ?? project.css ?? '',
+    js: jsFile?.content ?? project.js ?? '',
+  };
+}
+
+export const saveLocalProjectSnapshot = (project, files = []) => {
+  const snapshot = createProjectSnapshot(project, files);
+  const now = Date.now();
+  const localId = project.id && String(project.id).startsWith('local-')
+    ? project.id
+    : `local-${crypto.randomUUID()}`;
+
+  const entry = {
+    ...snapshot,
+    id: localId,
+    createdAt: snapshot.createdAt || now,
+    updatedAt: now,
+  };
+
+  const existing = readLocalProjects().filter((item) => item.id !== localId);
+  writeLocalProjects([entry, ...existing]);
+  localStorage.setItem(LAST_PROJECT_KEY, JSON.stringify(entry));
+  return entry;
+};
+
+export const loadLocalProjects = () => sortLocalProjects(readLocalProjects());
+
+export const loadLocalProject = (id) => {
+  if (!id) return null;
+  return readLocalProjects().find((project) => project.id === id) || null;
+};
+
+export const loadLastLocalProject = () => {
+  try {
+    return JSON.parse(localStorage.getItem(LAST_PROJECT_KEY) || 'null');
+  } catch {
+    return null;
+  }
+};
+
+export const deleteLocalProject = (id) => {
+  if (!id) return;
+  const nextProjects = readLocalProjects().filter((project) => project.id !== id);
+  writeLocalProjects(nextProjects);
+
+  const last = loadLastLocalProject();
+  if (last?.id === id) {
+    localStorage.removeItem(LAST_PROJECT_KEY);
+  }
+};
 
 // ── Account management ────────────────────────────────────────────────────────
 

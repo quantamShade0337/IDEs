@@ -3,6 +3,8 @@ import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
+import * as esbuild from 'esbuild';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -24,7 +26,18 @@ const terminalEnabled = terminalRequested && (process.env.NODE_ENV !== 'producti
 const terminalMode = 'devtools';
 const distDir = path.join(__dirname, 'dist');
 const workspaceRoot = path.resolve(process.env.TERMINAL_WORKDIR || process.cwd());
+const workspaceBaseDir = path.join(workspaceRoot, '.webide-workspaces');
+const deploymentsBaseDir = path.join(workspaceRoot, '.webide-deployments');
+const runtimePortBase = Number(process.env.WORKSPACE_RUNTIME_PORT_BASE || 4100);
 const sessions = new Map();
+const workspaceState = new Map();
+
+const RESERVED_TOP_LEVEL_PATHS = new Set([
+  'api', 'assets', 'auth', 'dashboard', 'editor', 'settings', 'legal',
+  'favicon.svg', 'icons.svg',
+]);
+
+app.use(express.json({ limit: '5mb' }));
 
 const ALLOWED_COMMANDS = new Set([
   'help', 'pwd', 'ls', 'cd', 'cat', 'head', 'tail', 'wc', 'grep', 'find', 'echo', 'clear',
@@ -56,10 +69,10 @@ function promptFor(session) {
   return `\x1b[32mwebide\x1b[0m:\x1b[34m${display}\x1b[0m$ `;
 }
 
-function createSession() {
+function createSession(initialCwd = workspaceRoot) {
   const session = {
     id: randomUUID(),
-    cwd: workspaceRoot,
+    cwd: initialCwd,
     inputBuffer: '',
     clients: new Set(),
     activeProcess: null,
@@ -81,6 +94,553 @@ function tokenize(line) {
   return line.match(/"[^"]*"|'[^']*'|\S+/g) || [];
 }
 
+function sanitizeWorkspaceId(value = '') {
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80);
+}
+
+function getWorkspacePaths(workspaceId) {
+  const safeId = sanitizeWorkspaceId(workspaceId);
+  if (!safeId) throw new Error('Invalid workspace id.');
+  const dir = path.join(workspaceBaseDir, safeId);
+  return {
+    id: safeId,
+    dir,
+    srcDir: path.join(dir, 'src'),
+  };
+}
+
+function sanitizeDeploymentSlug(value = '') {
+  return String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+}
+
+function getDeploymentDir(slug) {
+  const safeSlug = sanitizeDeploymentSlug(slug);
+  if (!safeSlug) throw new Error('Deployment slug is required.');
+  if (RESERVED_TOP_LEVEL_PATHS.has(safeSlug)) {
+    throw new Error(`'${safeSlug}' is reserved by the IDE app.`);
+  }
+
+  const dir = path.join(deploymentsBaseDir, safeSlug);
+  return {
+    slug: safeSlug,
+    dir,
+    metadataPath: path.join(dir, '.deployment.json'),
+  };
+}
+
+async function ensureCleanDirectory(targetDir) {
+  await fsp.rm(targetDir, { recursive: true, force: true });
+  await fsp.mkdir(targetDir, { recursive: true });
+}
+
+function isPathInsideDirectory(rootDir, targetPath) {
+  const relative = path.relative(rootDir, targetPath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function injectBaseHref(html, slug) {
+  if (!html.trim()) return html;
+  if (/<base\s/i.test(html)) return html;
+
+  const baseTag = `  <base href="/${slug}/" />`;
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<head([^>]*)>/i, (match, attrs) => `${match}\n${baseTag}`);
+  }
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+${baseTag}
+</head>
+<body>
+${html}
+</body>
+</html>`;
+}
+
+async function writeDeploymentMetadata(slug, metadata) {
+  const { metadataPath } = getDeploymentDir(slug);
+  await fsp.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
+  return metadata;
+}
+
+async function readDeploymentMetadata(slug) {
+  try {
+    const { metadataPath } = getDeploymentDir(slug);
+    const raw = await fsp.readFile(metadataPath, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function listDeploymentsForWorkspace(workspaceId) {
+  try {
+    const entries = await fsp.readdir(deploymentsBaseDir, { withFileTypes: true });
+    const deployments = await Promise.all(entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => readDeploymentMetadata(entry.name)));
+
+    return deployments
+      .filter((deployment) => deployment?.workspaceId === workspaceId)
+      .sort((a, b) => (b.deployedAt || 0) - (a.deployedAt || 0));
+  } catch {
+    return [];
+  }
+}
+
+function createStaticDeploymentIndex(files, slug) {
+  const htmlFile = files.find((file) => file.name === 'index.html');
+  if (htmlFile?.content) {
+    return injectBaseHref(htmlFile.content, slug);
+  }
+
+  const cssFile = files.find((file) => file.name === 'styles.css');
+  const jsFile = files.find((file) => file.name === 'script.js');
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/${slug}/" />
+    <title>WebIDE Deployment</title>
+    ${cssFile ? '<link rel="stylesheet" href="./styles.css" />' : ''}
+  </head>
+  <body>
+    ${htmlFile?.content || '<main></main>'}
+    ${jsFile ? '<script type="module" src="./script.js"></script>' : ''}
+  </body>
+</html>`;
+}
+
+async function deployStaticWorkspace({ workspaceId, slug, files, projectTitle }) {
+  const { dir } = getDeploymentDir(slug);
+  const safeFiles = files
+    .filter((file) => typeof file?.name === 'string' && typeof file?.content === 'string')
+    .map((file) => ({
+      name: file.name.replace(/^\/+/, ''),
+      content: file.content,
+    }))
+    .filter((file) => file.name && !file.name.includes('..'));
+
+  await ensureCleanDirectory(dir);
+
+  await Promise.all(safeFiles.map(async (file) => {
+    const fullPath = path.join(dir, file.name);
+    if (!isPathInsideDirectory(dir, fullPath)) {
+      throw new Error('Deployment file path escaped the deployment root.');
+    }
+    await fsp.mkdir(path.dirname(fullPath), { recursive: true });
+    const content = file.name === 'index.html' ? injectBaseHref(file.content, slug) : file.content;
+    await fsp.writeFile(fullPath, content, 'utf8');
+  }));
+
+  if (!safeFiles.some((file) => file.name === 'index.html')) {
+    await fsp.writeFile(path.join(dir, 'index.html'), createStaticDeploymentIndex(safeFiles, slug), 'utf8');
+  }
+
+  const metadata = {
+    slug,
+    workspaceId,
+    mode: 'static',
+    projectTitle: projectTitle || 'Untitled Project',
+    deployedAt: Date.now(),
+    route: `/${slug}`,
+  };
+  await writeDeploymentMetadata(slug, metadata);
+  return metadata;
+}
+
+async function buildCommand(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      ...options,
+      stdio: 'pipe',
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      const error = new Error(stderr.trim() || stdout.trim() || `${command} exited with code ${code}.`);
+      error.stdout = stdout;
+      error.stderr = stderr;
+      error.exitCode = code;
+      reject(error);
+    });
+  });
+}
+
+async function deployReactWorkspace({ workspaceId, slug, files, projectTitle }) {
+  const { dir: deploymentDir } = getDeploymentDir(slug);
+  const { dir: workspaceDir } = await ensureWorkspace(workspaceId);
+
+  if (Array.isArray(files) && files.length > 0) {
+    await syncWorkspaceFiles(workspaceId, files);
+  }
+
+  await ensureNodeModulesLink(workspaceDir);
+  await buildCommand('npm', ['run', 'build', '--', '--base', `/${slug}/`], {
+    cwd: workspaceDir,
+    env: {
+      ...process.env,
+      CI: '1',
+    },
+  });
+
+  const distPath = path.join(workspaceDir, 'dist');
+  if (!fs.existsSync(distPath)) {
+    throw new Error('React deployment build did not produce a dist directory.');
+  }
+
+  await ensureCleanDirectory(deploymentDir);
+  await fsp.cp(distPath, deploymentDir, { recursive: true });
+
+  const metadata = {
+    slug,
+    workspaceId,
+    mode: 'react',
+    projectTitle: projectTitle || 'Untitled Project',
+    deployedAt: Date.now(),
+    route: `/${slug}`,
+  };
+  await writeDeploymentMetadata(slug, metadata);
+  return metadata;
+}
+
+async function deployWorkspace({ workspaceId, slug, files, projectTitle }) {
+  const safeSlug = sanitizeDeploymentSlug(slug);
+  if (!safeSlug) {
+    throw new Error('Choose a deployment name with letters or numbers.');
+  }
+
+  const packageFile = Array.isArray(files)
+    ? files.find((file) => file?.name === 'package.json')
+    : null;
+  let manifest = null;
+
+  if (packageFile?.content) {
+    try {
+      manifest = JSON.parse(packageFile.content);
+    } catch {
+      manifest = null;
+    }
+  }
+
+  const framework = detectWorkspaceFrameworkFromManifest(manifest);
+
+  if (framework.kind === 'vite' || framework.kind === 'react') {
+    return deployReactWorkspace({ workspaceId, slug: safeSlug, files, projectTitle });
+  }
+
+  if (framework.kind === 'next' || framework.kind === 'node' || framework.kind === 'package') {
+    throw new Error('Path deployments currently support static HTML/CSS/JS projects and Vite-style React apps. Next.js and Node apps can run in the workspace runtime, but they are not yet published to /your-slug.');
+  }
+
+  return deployStaticWorkspace({ workspaceId, slug: safeSlug, files, projectTitle });
+}
+
+function getRuntimeDefaults(workspaceId) {
+  return {
+    workspaceId,
+    status: 'stopped',
+    port: null,
+    startedAt: null,
+    updatedAt: null,
+    logs: [],
+    pid: null,
+    lastError: null,
+    process: null,
+  };
+}
+
+function getTaskDefaults() {
+  return {
+    active: null,
+    history: [],
+  };
+}
+
+function getWorkspaceRecord(workspaceId) {
+  const safeId = sanitizeWorkspaceId(workspaceId);
+  const existing = workspaceState.get(safeId);
+  if (existing) return existing;
+  const created = {
+    revision: 0,
+    lastBuildAt: 0,
+    outputs: null,
+    lastError: null,
+    runtime: getRuntimeDefaults(safeId),
+    tasks: getTaskDefaults(),
+  };
+  workspaceState.set(safeId, created);
+  return created;
+}
+
+async function ensureNodeModulesLink(workspaceDir) {
+  const localNodeModules = path.join(workspaceDir, 'node_modules');
+  if (fs.existsSync(localNodeModules)) return;
+
+  const rootNodeModules = path.join(workspaceRoot, 'node_modules');
+  if (!fs.existsSync(rootNodeModules)) return;
+
+  try {
+    await fsp.symlink(rootNodeModules, localNodeModules, 'junction');
+  } catch {
+    /* best effort */
+  }
+}
+
+async function readWorkspacePackageManifest(workspaceDir) {
+  try {
+    const raw = await fsp.readFile(path.join(workspaceDir, 'package.json'), 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function detectWorkspaceFrameworkFromManifest(manifest) {
+  if (!manifest) return { kind: 'static', label: 'Static' };
+
+  const deps = {
+    ...(manifest.dependencies || {}),
+    ...(manifest.devDependencies || {}),
+  };
+
+  if (deps.next) return { kind: 'next', label: 'Next.js' };
+  if (deps.vite) return { kind: 'vite', label: 'Vite' };
+  if (deps.react || deps['react-dom']) return { kind: 'react', label: 'React' };
+  if (manifest.scripts?.dev || manifest.scripts?.start) return { kind: 'node', label: 'Node.js' };
+  return { kind: 'package', label: 'Package app' };
+}
+
+function normalizeViteIndexHtml(content = '') {
+  if (typeof content !== 'string' || !content) return content;
+
+  return content
+    .replace(
+      /(<script\b[^>]*type=["']module["'][^>]*\bsrc=["'])\/src\//gi,
+      '$1./src/'
+    )
+    .replace(
+      /(<link\b[^>]*rel=["']stylesheet["'][^>]*\bhref=["'])\/src\//gi,
+      '$1./src/'
+    )
+    .replace(
+      /(<script\b[^>]*type=["']module["'][^>]*\bsrc=["'])\/@vite\/client/gi,
+      '$1./@vite/client'
+    );
+}
+
+function resolveRuntimeCommand(framework, manifest, workspaceId, runtimePort) {
+  const scripts = manifest?.scripts || {};
+
+  if (framework.kind === 'next') {
+    return {
+      command: 'npm',
+      args: ['run', 'dev', '--', '--hostname', '0.0.0.0', '--port', String(runtimePort)],
+      env: {
+        PORT: String(runtimePort),
+        HOST: '0.0.0.0',
+        HOSTNAME: '0.0.0.0',
+      },
+    };
+  }
+
+  if (framework.kind === 'vite' || framework.kind === 'react') {
+    return {
+      command: 'npm',
+      args: ['run', 'dev', '--', '--host', '0.0.0.0', '--port', String(runtimePort), '--base', `/api/workspaces/${workspaceId}/runtime/`],
+      env: {
+        PORT: String(runtimePort),
+        HOST: '0.0.0.0',
+      },
+    };
+  }
+
+  if (scripts.dev) {
+    return {
+      command: 'npm',
+      args: ['run', 'dev'],
+      env: {
+        PORT: String(runtimePort),
+        HOST: '0.0.0.0',
+        HOSTNAME: '0.0.0.0',
+      },
+    };
+  }
+
+  if (scripts.start) {
+    return {
+      command: 'npm',
+      args: ['start'],
+      env: {
+        PORT: String(runtimePort),
+        HOST: '0.0.0.0',
+        HOSTNAME: '0.0.0.0',
+      },
+    };
+  }
+
+  throw new Error('This project does not define an npm dev or start script yet.');
+}
+
+async function ensureWorkspace(workspaceId) {
+  const paths = getWorkspacePaths(workspaceId);
+  await fsp.mkdir(paths.srcDir, { recursive: true });
+
+  await ensureNodeModulesLink(paths.dir);
+
+  getWorkspaceRecord(paths.id);
+
+  return paths;
+}
+
+function markWorkspaceDirty(workspaceId) {
+  const safeId = sanitizeWorkspaceId(workspaceId);
+  const current = getWorkspaceRecord(safeId);
+  workspaceState.set(safeId, {
+    ...current,
+    revision: current.revision + 1,
+    outputs: null,
+    lastError: null,
+  });
+  return workspaceState.get(safeId);
+}
+
+async function syncWorkspaceFiles(workspaceId, files = []) {
+  const { id, dir } = await ensureWorkspace(workspaceId);
+  const safeFiles = files
+    .filter((file) => typeof file?.name === 'string' && typeof file?.content === 'string')
+    .map((file) => ({
+      name: file.name.replace(/^\/+/, ''),
+      content: file.content,
+    }))
+    .filter((file) => file.name && !file.name.includes('..'));
+
+  const incomingManifestFile = safeFiles.find((file) => file.name === 'package.json');
+  let framework = { kind: 'static', label: 'Static' };
+  if (incomingManifestFile) {
+    try {
+      framework = detectWorkspaceFrameworkFromManifest(JSON.parse(incomingManifestFile.content));
+    } catch {
+      framework = { kind: 'static', label: 'Static' };
+    }
+  } else {
+    const currentManifest = await readWorkspacePackageManifest(dir);
+    framework = detectWorkspaceFrameworkFromManifest(currentManifest);
+  }
+
+  await Promise.all(safeFiles.map(async (file) => {
+    const fullPath = path.join(dir, file.name);
+    if (!isPathWithinRoot(fullPath)) throw new Error('Workspace file path escaped the workspace root.');
+    await fsp.mkdir(path.dirname(fullPath), { recursive: true });
+    const nextContent = framework.kind === 'vite' && file.name === 'index.html'
+      ? normalizeViteIndexHtml(file.content)
+      : file.content;
+    await fsp.writeFile(fullPath, nextContent, 'utf8');
+  }));
+
+  return markWorkspaceDirty(id);
+}
+
+function buildErrorModule(error) {
+  const safeMessage = JSON.stringify(error?.message || 'React build failed.');
+  return `const root = document.getElementById('root');
+if (root) {
+  root.innerHTML = '';
+  const pre = document.createElement('pre');
+  pre.textContent = ${safeMessage};
+  pre.style.whiteSpace = 'pre-wrap';
+  pre.style.padding = '24px';
+  pre.style.margin = '0';
+  pre.style.minHeight = '100vh';
+  pre.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+  pre.style.background = '#09090b';
+  pre.style.color = '#fda4af';
+  document.body.style.margin = '0';
+  document.body.style.background = '#09090b';
+  root.appendChild(pre);
+}`;
+}
+
+async function buildWorkspaceOutputs(workspaceId) {
+  const { id, dir } = await ensureWorkspace(workspaceId);
+  const state = getWorkspaceRecord(id);
+  if (state?.outputs) return state;
+
+  try {
+    const result = await esbuild.build({
+      entryPoints: [path.join(dir, 'src', 'main.jsx')],
+      absWorkingDir: dir,
+      bundle: true,
+      format: 'esm',
+      platform: 'browser',
+      write: false,
+      sourcemap: 'inline',
+      jsx: 'automatic',
+      loader: {
+        '.js': 'jsx',
+        '.jsx': 'jsx',
+        '.ts': 'ts',
+        '.tsx': 'tsx',
+        '.css': 'css',
+      },
+      define: {
+        'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'production'),
+      },
+      outdir: 'out',
+    });
+
+    const outputs = {};
+    result.outputFiles.forEach((file) => {
+      outputs[path.basename(file.path)] = file.text;
+    });
+
+    const nextState = {
+      ...state,
+      revision: state?.revision || 0,
+      lastBuildAt: Date.now(),
+      outputs,
+      lastError: null,
+    };
+    workspaceState.set(id, nextState);
+    return nextState;
+  } catch (error) {
+    const nextState = {
+      ...state,
+      revision: state?.revision || 0,
+      lastBuildAt: Date.now(),
+      outputs: {
+        'main.js': buildErrorModule(error),
+        'main.css': '',
+      },
+      lastError: error?.message || String(error),
+    };
+    workspaceState.set(id, nextState);
+    return nextState;
+  }
+}
+
 function cleanToken(token = '') {
   if (
     (token.startsWith('"') && token.endsWith('"')) ||
@@ -89,6 +649,330 @@ function cleanToken(token = '') {
     return token.slice(1, -1);
   }
   return token;
+}
+
+function getRuntimeSnapshot(workspaceId) {
+  const record = getWorkspaceRecord(workspaceId);
+  const runtime = record.runtime || getRuntimeDefaults(workspaceId);
+  return {
+    workspaceId: sanitizeWorkspaceId(workspaceId),
+    framework: runtime.framework || null,
+    frameworkLabel: runtime.frameworkLabel || null,
+    status: runtime.status,
+    port: runtime.port,
+    startedAt: runtime.startedAt,
+    updatedAt: runtime.updatedAt,
+    pid: runtime.pid,
+    logs: runtime.logs.slice(-120),
+    lastError: runtime.lastError,
+    previewUrl: runtime.port ? `/api/workspaces/${sanitizeWorkspaceId(workspaceId)}/runtime/` : null,
+  };
+}
+
+function getTasksSnapshot(workspaceId) {
+  const record = getWorkspaceRecord(workspaceId);
+  const tasks = record.tasks || getTaskDefaults();
+  return {
+    active: tasks.active,
+    history: tasks.history.slice(-20),
+  };
+}
+
+function appendRuntimeLog(workspaceId, chunk, stream = 'stdout') {
+  const record = getWorkspaceRecord(workspaceId);
+  const runtime = record.runtime || getRuntimeDefaults(workspaceId);
+  const nextLogs = [...runtime.logs, {
+    id: randomUUID(),
+    stream,
+    message: chunk,
+    ts: Date.now(),
+  }].slice(-200);
+  record.runtime = {
+    ...runtime,
+    logs: nextLogs,
+    updatedAt: Date.now(),
+  };
+  workspaceState.set(sanitizeWorkspaceId(workspaceId), record);
+}
+
+function setRuntimeState(workspaceId, patch) {
+  const safeId = sanitizeWorkspaceId(workspaceId);
+  const record = getWorkspaceRecord(safeId);
+  const runtime = record.runtime || getRuntimeDefaults(safeId);
+  const next = {
+    ...runtime,
+    ...patch,
+    workspaceId: safeId,
+    updatedAt: Date.now(),
+  };
+  record.runtime = next;
+  workspaceState.set(safeId, record);
+  return next;
+}
+
+function setTaskState(workspaceId, updater) {
+  const safeId = sanitizeWorkspaceId(workspaceId);
+  const record = getWorkspaceRecord(safeId);
+  const tasks = record.tasks || getTaskDefaults();
+  record.tasks = updater(tasks);
+  workspaceState.set(safeId, record);
+  return record.tasks;
+}
+
+async function isPortOpen(portToCheck) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port: portToCheck }, () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.on('error', () => resolve(false));
+  });
+}
+
+async function findAvailablePort() {
+  for (let candidate = runtimePortBase; candidate < runtimePortBase + 100; candidate += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    const open = await isPortOpen(candidate);
+    if (!open) return candidate;
+  }
+  throw new Error('No available workspace runtime port.');
+}
+
+async function waitForPort(portToCheck, timeoutMs = 15000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    // eslint-disable-next-line no-await-in-loop
+    const open = await isPortOpen(portToCheck);
+    if (open) return true;
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return false;
+}
+
+async function startWorkspaceRuntime(workspaceId) {
+  const { id, dir } = await ensureWorkspace(workspaceId);
+  const runtime = getWorkspaceRecord(id).runtime || getRuntimeDefaults(id);
+
+  if (runtime.status === 'running' || runtime.status === 'starting') {
+    return getRuntimeSnapshot(id);
+  }
+
+  const portForRuntime = await findAvailablePort();
+  const manifest = await readWorkspacePackageManifest(dir);
+  const framework = detectWorkspaceFrameworkFromManifest(manifest);
+  const runtimeCommand = resolveRuntimeCommand(framework, manifest, id, portForRuntime);
+  setRuntimeState(id, {
+    status: 'starting',
+    port: portForRuntime,
+    startedAt: runtime.startedAt || Date.now(),
+    lastError: null,
+    logs: [],
+    framework: framework.kind,
+    frameworkLabel: framework.label,
+  });
+  appendRuntimeLog(id, `Starting ${framework.label} runtime on port ${portForRuntime}\n`, 'system');
+
+  const child = spawn(runtimeCommand.command, runtimeCommand.args, {
+    cwd: dir,
+    env: {
+      ...process.env,
+      ...runtimeCommand.env,
+      BROWSER: 'none',
+      CI: '1',
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+    },
+    stdio: 'pipe',
+  });
+
+  setRuntimeState(id, {
+    process: child,
+    pid: child.pid,
+    port: portForRuntime,
+  });
+
+  child.stdout.on('data', (chunk) => {
+    appendRuntimeLog(id, chunk.toString(), 'stdout');
+  });
+
+  child.stderr.on('data', (chunk) => {
+    appendRuntimeLog(id, chunk.toString(), 'stderr');
+  });
+
+  child.on('error', (error) => {
+    appendRuntimeLog(id, `${error.message}\n`, 'stderr');
+    setRuntimeState(id, {
+      status: 'error',
+      process: null,
+      pid: null,
+      lastError: error.message,
+    });
+  });
+
+  child.on('close', (code, signal) => {
+    const current = getWorkspaceRecord(id).runtime || getRuntimeDefaults(id);
+    const stoppedStatus = current.status === 'stopping' ? 'stopped' : (code === 0 ? 'stopped' : 'error');
+    setRuntimeState(id, {
+      status: stoppedStatus,
+      process: null,
+      pid: null,
+      port: stoppedStatus === 'running' ? current.port : null,
+      lastError: stoppedStatus === 'error' ? `Runtime exited (${signal || code || 0})` : null,
+    });
+    appendRuntimeLog(id, `Runtime exited (${signal || code || 0})\n`, 'system');
+  });
+
+  const ready = await waitForPort(portForRuntime);
+  if (!ready) {
+    setRuntimeState(id, {
+      status: 'error',
+      process: child,
+      lastError: `Runtime did not become ready on port ${portForRuntime}.`,
+    });
+    appendRuntimeLog(id, `Runtime failed to become ready on port ${portForRuntime}\n`, 'stderr');
+    return getRuntimeSnapshot(id);
+  }
+
+  setRuntimeState(id, {
+    status: 'running',
+    startedAt: Date.now(),
+  });
+  appendRuntimeLog(id, `Runtime ready at http://127.0.0.1:${portForRuntime}\n`, 'system');
+  return getRuntimeSnapshot(id);
+}
+
+async function stopWorkspaceRuntime(workspaceId) {
+  const safeId = sanitizeWorkspaceId(workspaceId);
+  const runtime = getWorkspaceRecord(safeId).runtime || getRuntimeDefaults(safeId);
+  if (!runtime.process || runtime.status === 'stopped') {
+    setRuntimeState(safeId, { status: 'stopped', process: null, pid: null, port: null });
+    return getRuntimeSnapshot(safeId);
+  }
+
+  setRuntimeState(safeId, { status: 'stopping' });
+  appendRuntimeLog(safeId, 'Stopping workspace runtime\n', 'system');
+  runtime.process.kill('SIGTERM');
+
+  const started = Date.now();
+  while (Date.now() - started < 5000) {
+    const current = getWorkspaceRecord(safeId).runtime || getRuntimeDefaults(safeId);
+    if (!current.process && current.status === 'stopped') {
+      return getRuntimeSnapshot(safeId);
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+
+  const current = getWorkspaceRecord(safeId).runtime || getRuntimeDefaults(safeId);
+  if (current.process) {
+    current.process.kill('SIGKILL');
+  }
+  setRuntimeState(safeId, { status: 'stopped', process: null, pid: null, port: null });
+  return getRuntimeSnapshot(safeId);
+}
+
+async function restartWorkspaceRuntime(workspaceId) {
+  await stopWorkspaceRuntime(workspaceId);
+  return startWorkspaceRuntime(workspaceId);
+}
+
+const TASK_DEFINITIONS = {
+  install: {
+    label: 'Install dependencies',
+    command: 'npm',
+    args: ['install'],
+  },
+  build: {
+    label: 'Build app',
+    command: 'npm',
+    args: ['run', 'build'],
+  },
+  lint: {
+    label: 'Lint app',
+    command: 'npm',
+    args: ['run', 'lint'],
+  },
+};
+
+async function runWorkspaceTask(workspaceId, taskKey) {
+  const definition = TASK_DEFINITIONS[taskKey];
+  if (!definition) throw new Error('Unknown task.');
+
+  const { id, dir } = await ensureWorkspace(workspaceId);
+  const currentTasks = getTasksSnapshot(id);
+  if (currentTasks.active && currentTasks.active.status === 'running') {
+    throw new Error(`Task already running: ${currentTasks.active.label}`);
+  }
+
+  const task = {
+    id: randomUUID(),
+    key: taskKey,
+    label: definition.label,
+    command: [definition.command, ...definition.args].join(' '),
+    status: 'running',
+    startedAt: Date.now(),
+    completedAt: null,
+    exitCode: null,
+    logs: [],
+  };
+
+  setTaskState(id, (tasks) => ({
+    ...tasks,
+    active: task,
+  }));
+
+  const child = spawn(definition.command, definition.args, {
+    cwd: dir,
+    env: {
+      ...process.env,
+      CI: '1',
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+    },
+    stdio: 'pipe',
+  });
+
+  const appendTaskLog = (chunk, stream) => {
+    setTaskState(id, (tasks) => {
+      if (!tasks.active || tasks.active.id !== task.id) return tasks;
+      return {
+        ...tasks,
+        active: {
+          ...tasks.active,
+          logs: [...tasks.active.logs, {
+            id: randomUUID(),
+            stream,
+            message: chunk,
+            ts: Date.now(),
+          }].slice(-400),
+        },
+      };
+    });
+  };
+
+  child.stdout.on('data', (chunk) => appendTaskLog(chunk.toString(), 'stdout'));
+  child.stderr.on('data', (chunk) => appendTaskLog(chunk.toString(), 'stderr'));
+
+  child.on('error', (error) => appendTaskLog(`${error.message}\n`, 'stderr'));
+
+  child.on('close', (code) => {
+    setTaskState(id, (tasks) => {
+      const active = tasks.active?.id === task.id ? tasks.active : task;
+      const finished = {
+        ...active,
+        status: code === 0 ? 'succeeded' : 'failed',
+        completedAt: Date.now(),
+        exitCode: code ?? 0,
+      };
+      return {
+        active: null,
+        history: [finished, ...tasks.history].slice(0, 20),
+      };
+    });
+  });
+
+  return getTasksSnapshot(id);
 }
 
 function isPathWithinRoot(targetPath) {
@@ -467,7 +1351,7 @@ async function handleInput(session, data) {
 
 const wss = new WebSocketServer({ server, path: '/terminal' });
 
-wss.on('connection', (socket) => {
+wss.on('connection', async (socket, request) => {
   if (!terminalEnabled) {
     socket.send(JSON.stringify({
       type: 'error',
@@ -480,19 +1364,33 @@ wss.on('connection', (socket) => {
   }
 
   let session = null;
+  const requestUrl = new URL(request.url || '/terminal', 'http://localhost');
+  const requestedWorkspaceId = sanitizeWorkspaceId(requestUrl.searchParams.get('workspaceId') || '');
+  let workspaceCwd = workspaceRoot;
+
+  if (requestedWorkspaceId) {
+    try {
+      const workspace = await ensureWorkspace(requestedWorkspaceId);
+      workspaceCwd = workspace.dir;
+    } catch {
+      workspaceCwd = workspaceRoot;
+    }
+  }
 
   const openSession = () => {
-    session = createSession();
+    session = createSession(workspaceCwd);
     session.clients.add(socket);
     socket.send(JSON.stringify({
       type: 'ready',
       sessionId: session.id,
       shell: 'devtools-terminal',
-      cwd: workspaceRoot,
+      cwd: workspaceCwd,
       platform: os.platform(),
       mode: terminalMode,
+      workspaceId: requestedWorkspaceId || null,
     }));
     writeOutput(session, '\x1b[1m\x1b[32mWebIDE Dev Terminal\x1b[0m\r\n');
+    writeOutput(session, '\x1b[90mThis shell is attached to the server workspace for the current project.\x1b[0m\r\n');
     writeOutput(session, '\x1b[90mAllowed: npm app scripts, safe git workflows, localhost curl, and read-only file navigation.\x1b[0m\r\n\r\n');
     writeOutput(session, promptFor(session));
   };
@@ -556,6 +1454,276 @@ app.get('/api/health', (_req, res) => {
     workspaceRoot,
     built: fs.existsSync(path.join(distDir, 'index.html')),
   });
+});
+
+app.post('/api/workspaces/sync', async (req, res) => {
+  try {
+    const workspaceId = sanitizeWorkspaceId(req.body?.workspaceId);
+    if (!workspaceId) {
+      res.status(400).json({ error: 'workspaceId is required.' });
+      return;
+    }
+
+    const state = await syncWorkspaceFiles(workspaceId, req.body?.files || []);
+    res.json({
+      ok: true,
+      workspaceId,
+      revision: state.revision,
+      previewUrl: `/api/workspaces/${workspaceId}/preview?rev=${state.revision}`,
+      cwd: path.join(workspaceBaseDir, workspaceId),
+      runtime: getRuntimeSnapshot(workspaceId),
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Unable to sync workspace.' });
+  }
+});
+
+app.get('/api/workspaces/:workspaceId/runtime/status', async (req, res) => {
+  try {
+    const workspaceId = sanitizeWorkspaceId(req.params.workspaceId);
+    await ensureWorkspace(workspaceId);
+    res.json({
+      ok: true,
+      runtime: getRuntimeSnapshot(workspaceId),
+      tasks: getTasksSnapshot(workspaceId),
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Unable to read runtime status.' });
+  }
+});
+
+app.get('/api/workspaces/:workspaceId/tasks', async (req, res) => {
+  try {
+    const workspaceId = sanitizeWorkspaceId(req.params.workspaceId);
+    await ensureWorkspace(workspaceId);
+    res.json({
+      ok: true,
+      tasks: getTasksSnapshot(workspaceId),
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Unable to read workspace tasks.' });
+  }
+});
+
+app.post('/api/workspaces/:workspaceId/tasks/run', async (req, res) => {
+  try {
+    const workspaceId = sanitizeWorkspaceId(req.params.workspaceId);
+    const taskKey = String(req.body?.task || '');
+    const tasks = await runWorkspaceTask(workspaceId, taskKey);
+    res.json({ ok: true, tasks });
+  } catch (error) {
+    res.status(400).json({ error: error.message || 'Unable to run workspace task.' });
+  }
+});
+
+app.get('/api/workspaces/:workspaceId/deployments', async (req, res) => {
+  try {
+    const workspaceId = sanitizeWorkspaceId(req.params.workspaceId);
+    const deployments = await listDeploymentsForWorkspace(workspaceId);
+    res.json({ ok: true, deployments });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Unable to read deployments.' });
+  }
+});
+
+app.post('/api/workspaces/:workspaceId/deploy', async (req, res) => {
+  try {
+    const workspaceId = sanitizeWorkspaceId(req.params.workspaceId);
+    const slug = sanitizeDeploymentSlug(req.body?.slug || '');
+    const files = Array.isArray(req.body?.files) ? req.body.files : [];
+    const projectTitle = String(req.body?.projectTitle || '');
+    const deployment = await deployWorkspace({ workspaceId, slug, files, projectTitle });
+    const deployments = await listDeploymentsForWorkspace(workspaceId);
+
+    res.json({
+      ok: true,
+      deployment,
+      deployments,
+      url: `/${deployment.slug}`,
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message || 'Unable to deploy workspace.' });
+  }
+});
+
+app.post('/api/workspaces/:workspaceId/runtime/start', async (req, res) => {
+  try {
+    const workspaceId = sanitizeWorkspaceId(req.params.workspaceId);
+    const runtime = await startWorkspaceRuntime(workspaceId);
+    res.json({ ok: true, runtime });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Unable to start runtime.' });
+  }
+});
+
+app.post('/api/workspaces/:workspaceId/runtime/stop', async (req, res) => {
+  try {
+    const workspaceId = sanitizeWorkspaceId(req.params.workspaceId);
+    const runtime = await stopWorkspaceRuntime(workspaceId);
+    res.json({ ok: true, runtime });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Unable to stop runtime.' });
+  }
+});
+
+app.post('/api/workspaces/:workspaceId/runtime/restart', async (req, res) => {
+  try {
+    const workspaceId = sanitizeWorkspaceId(req.params.workspaceId);
+    const runtime = await restartWorkspaceRuntime(workspaceId);
+    res.json({ ok: true, runtime });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Unable to restart runtime.' });
+  }
+});
+
+app.get('/api/workspaces/:workspaceId/preview', async (req, res) => {
+  try {
+    const workspaceId = sanitizeWorkspaceId(req.params.workspaceId);
+    await ensureWorkspace(workspaceId);
+    const state = workspaceState.get(workspaceId) || { revision: 0 };
+    const rev = state.revision || 0;
+    res.type('html').send(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebIDE React Preview</title>
+    <link rel="stylesheet" href="/api/workspaces/${workspaceId}/main.css?rev=${rev}" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/api/workspaces/${workspaceId}/main.js?rev=${rev}"></script>
+  </body>
+</html>`);
+  } catch (error) {
+    res.status(500).send(error.message || 'Unable to load preview.');
+  }
+});
+
+app.get('/api/workspaces/:workspaceId/main.js', async (req, res) => {
+  try {
+    const workspaceId = sanitizeWorkspaceId(req.params.workspaceId);
+    const state = await buildWorkspaceOutputs(workspaceId);
+    res.type('js').send(
+      state.outputs['main.js']
+      || state.outputs['bundle.js']
+      || state.outputs['index.js']
+      || buildErrorModule(new Error('No JavaScript output generated.'))
+    );
+  } catch (error) {
+    res.status(500).type('js').send(buildErrorModule(error));
+  }
+});
+
+app.get('/api/workspaces/:workspaceId/main.css', async (req, res) => {
+  try {
+    const workspaceId = sanitizeWorkspaceId(req.params.workspaceId);
+    const state = await buildWorkspaceOutputs(workspaceId);
+    res.type('css').send(
+      state.outputs['main.css']
+      || state.outputs['bundle.css']
+      || state.outputs['index.css']
+      || ''
+    );
+  } catch (error) {
+    res.status(500).type('css').send(`/* ${error.message || 'Unable to build CSS.'} */`);
+  }
+});
+
+app.use('/api/workspaces/:workspaceId/runtime', async (req, res, next) => {
+  try {
+    const workspaceId = sanitizeWorkspaceId(req.params.workspaceId);
+    const runtime = getRuntimeSnapshot(workspaceId);
+    if (!runtime.port || runtime.status !== 'running') {
+      res.status(409).send('Workspace runtime is not running.');
+      return;
+    }
+
+    const originalUrl = req.originalUrl;
+    const prefix = `/api/workspaces/${workspaceId}/runtime`;
+    const suffix = originalUrl.startsWith(prefix) ? originalUrl.slice(prefix.length) || '/' : '/';
+    const targetPath = runtime.framework === 'vite' || runtime.framework === 'react'
+      ? (originalUrl || `${prefix}/`)
+      : suffix;
+    const targetUrl = new URL(`http://127.0.0.1:${runtime.port}${targetPath}`);
+
+    const forwardedHeaders = new Headers();
+    Object.entries(req.headers).forEach(([key, value]) => {
+      if (value == null) return;
+      if (['host', 'connection', 'content-length'].includes(key.toLowerCase())) return;
+      if (Array.isArray(value)) {
+        forwardedHeaders.set(key, value.join(', '));
+      } else {
+        forwardedHeaders.set(key, value);
+      }
+    });
+
+    const response = await fetch(targetUrl, {
+      method: req.method,
+      headers: forwardedHeaders,
+      redirect: 'manual',
+    });
+
+    res.status(response.status);
+    response.headers.forEach((value, key) => {
+      if (['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive'].includes(key.toLowerCase())) {
+        return;
+      }
+      res.setHeader(key, value);
+    });
+
+    const body = Buffer.from(await response.arrayBuffer());
+    res.send(body);
+  } catch (error) {
+    if (error?.message?.includes('fetch failed')) {
+      res.status(502).send('Workspace runtime is unavailable.');
+      return;
+    }
+    next(error);
+  }
+});
+
+app.use(async (req, res, next) => {
+  if (!['GET', 'HEAD'].includes(req.method)) {
+    next();
+    return;
+  }
+
+  const pathname = decodeURIComponent(new URL(req.originalUrl, 'http://localhost').pathname);
+  const [slug, ...restParts] = pathname.replace(/^\/+/, '').split('/').filter(Boolean);
+
+  if (!slug || RESERVED_TOP_LEVEL_PATHS.has(slug)) {
+    next();
+    return;
+  }
+
+  const { dir } = getDeploymentDir(slug);
+  if (!fs.existsSync(dir)) {
+    next();
+    return;
+  }
+
+  const relativePath = restParts.join('/');
+  const requestedPath = relativePath ? path.join(dir, relativePath) : path.join(dir, 'index.html');
+  const normalized = path.normalize(requestedPath);
+
+  if (!isPathInsideDirectory(dir, normalized)) {
+    res.status(400).send('Invalid deployment path.');
+    return;
+  }
+
+  if (fs.existsSync(normalized) && fs.statSync(normalized).isFile()) {
+    res.sendFile(normalized, { dotfiles: 'allow' });
+    return;
+  }
+
+  const spaIndex = path.join(dir, 'index.html');
+  if (fs.existsSync(spaIndex)) {
+    res.sendFile(spaIndex, { dotfiles: 'allow' });
+    return;
+  }
+
+  next();
 });
 
 app.use(express.static(distDir));

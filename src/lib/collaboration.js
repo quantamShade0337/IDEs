@@ -7,6 +7,9 @@ import {
   deleteDoc,
   collection,
   serverTimestamp,
+  query,
+  orderBy,
+  limit,
 } from 'firebase/firestore';
 import { getDb } from './firebase';
 
@@ -19,6 +22,12 @@ function getColor(uid) {
   let hash = 0;
   for (let i = 0; i < uid.length; i++) hash = uid.charCodeAt(i) + ((hash << 5) - hash);
   return COLORS[Math.abs(hash) % COLORS.length];
+}
+
+function cleanDetails(details = {}) {
+  return Object.fromEntries(
+    Object.entries(details).filter(([, value]) => value !== undefined)
+  );
 }
 
 // ── Presence ──────────────────────────────────────────────────────────────────
@@ -39,6 +48,7 @@ export function joinSession(projectId, user) {
   };
 
   setDoc(presenceRef, data).catch(() => {});
+  logCollabEvent(projectId, user, 'session.joined').catch(() => {});
 
   // Heartbeat every 15s
   const heartbeat = setInterval(() => {
@@ -47,6 +57,7 @@ export function joinSession(projectId, user) {
 
   return () => {
     clearInterval(heartbeat);
+    logCollabEvent(projectId, user, 'session.left').catch(() => {});
     deleteDoc(presenceRef).catch(() => {});
   };
 }
@@ -136,11 +147,14 @@ export async function createCollabSession(projectId, ownerId) {
   return projectId;
 }
 
-export async function endCollabSession(projectId) {
+export async function endCollabSession(projectId, user) {
   const db = getDb();
   if (!db) return;
   const sessionRef = doc(db, 'projects', projectId, 'collab', 'session');
   await updateDoc(sessionRef, { active: false }).catch(() => {});
+  if (user) {
+    await logCollabEvent(projectId, user, 'session.ended').catch(() => {});
+  }
 }
 
 export function subscribeCollabSession(projectId, callback) {
@@ -149,6 +163,43 @@ export function subscribeCollabSession(projectId, callback) {
   const sessionRef = doc(db, 'projects', projectId, 'collab', 'session');
   return onSnapshot(sessionRef, (snap) => {
     callback(snap.exists() ? snap.data() : null);
+  }, () => {});
+}
+
+// ── Activity Feed ─────────────────────────────────────────────────────────────
+
+export async function logCollabEvent(projectId, user, type, details = {}) {
+  const db = getDb();
+  if (!db || !projectId || !user?.uid || !type) return;
+
+  const eventsRef = collection(db, 'projects', projectId, 'activity');
+  const eventRef = doc(eventsRef);
+
+  await setDoc(eventRef, {
+    uid: user.uid,
+    displayName: user.displayName || 'Anonymous',
+    color: getColor(user.uid),
+    type,
+    details: cleanDetails(details),
+    createdAt: serverTimestamp(),
+  });
+}
+
+export function subscribeActivity(projectId, callback) {
+  const db = getDb();
+  if (!db || !projectId) return () => {};
+
+  const eventsRef = query(
+    collection(db, 'projects', projectId, 'activity'),
+    orderBy('createdAt', 'desc'),
+    limit(50)
+  );
+
+  return onSnapshot(eventsRef, (snap) => {
+    const events = snap.docs
+      .map((entry) => ({ id: entry.id, ...entry.data() }))
+      .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+    callback(events);
   }, () => {});
 }
 

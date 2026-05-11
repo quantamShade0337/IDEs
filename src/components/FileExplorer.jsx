@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
 import {
   FilePlus, Trash2, PencilLine, Check, X, Upload,
-  FileCode, FileText, Braces, File, FileJson, ChevronRight,
+  FileCode, FileText, Braces, File, FileJson, Blocks, FolderOpen,
 } from 'lucide-react';
-import { useStore } from '../store';
+import { isReactProjectFiles, useStore } from '../store';
 
 function fileIcon(name, lang) {
   const ext = name.split('.').pop().toLowerCase();
@@ -42,17 +42,26 @@ function RenameInput({ value, onConfirm, onCancel }) {
 }
 
 export default function FileExplorer() {
-  const { files, activeFileId, setActiveFileId, addFile, renameFile, deleteFile, updateFileContent } = useStore();
+  const { files, activeFileId, setActiveFileId, addFile, renameFile, deleteFile, importFiles, createComponent, notify } = useStore();
   const [renaming, setRenaming] = useState(null);
   const [hovering, setHovering] = useState(null);
   const [newFileName, setNewFileName] = useState('');
   const [adding, setAdding] = useState(false);
+  const [addingComponent, setAddingComponent] = useState(false);
+  const [newComponentName, setNewComponentName] = useState('');
   const addInputRef = useRef(null);
+  const componentInputRef = useRef(null);
   const fileInputRef = useRef(null);
+  const folderInputRef = useRef(null);
+  const reactProject = isReactProjectFiles(files);
 
   useEffect(() => {
     if (adding) addInputRef.current?.focus();
   }, [adding]);
+
+  useEffect(() => {
+    if (addingComponent) componentInputRef.current?.focus();
+  }, [addingComponent]);
 
   // F2 to rename active file
   useEffect(() => {
@@ -72,23 +81,60 @@ export default function FileExplorer() {
     setAdding(false);
   };
 
-  const handleImport = (e) => {
-    const importedFiles = Array.from(e.target.files);
-    importedFiles.forEach(file => {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        const content = ev.target.result;
-        const existing = files.find(f => f.name === file.name);
-        if (existing) {
-          updateFileContent(existing.id, content);
-          setActiveFileId(existing.id);
-        } else {
-          addFile(file.name, content);
-        }
-      };
-      reader.readAsText(file);
-    });
+  const handleAddComponent = () => {
+    if (!newComponentName.trim()) {
+      setAddingComponent(false);
+      return;
+    }
+
+    const result = createComponent(newComponentName.trim());
+    if (!result.ok) {
+      notify(result.error, 'error');
+      return;
+    }
+
+    notify(`${result.componentName} component created`, 'success');
+    setNewComponentName('');
+    setAddingComponent(false);
+  };
+
+  const handleImport = async (e, mode = 'files') => {
+    const selectedFiles = Array.from(e.target.files || []);
     e.target.value = '';
+    if (selectedFiles.length === 0) return;
+
+    try {
+      const importedFiles = await Promise.all(selectedFiles.map(async (file) => {
+        const content = await file.text();
+        return {
+          name: mode === 'folder' ? (file.webkitRelativePath || file.name) : file.name,
+          language: undefined,
+          content,
+        };
+      }));
+
+      const projectTitle = mode === 'folder'
+        ? (selectedFiles[0]?.webkitRelativePath?.split('/')[0] || undefined)
+        : undefined;
+
+      const activeId = importFiles(importedFiles, {
+        replace: mode === 'folder',
+        projectTitle,
+      });
+
+      if (activeId) {
+        setActiveFileId(activeId);
+      }
+
+      notify(
+        mode === 'folder'
+          ? `Imported ${importedFiles.length} files into a new editable workspace`
+          : `Imported ${importedFiles.length} file${importedFiles.length === 1 ? '' : 's'}`,
+        'success'
+      );
+    } catch (error) {
+      notify(error.message || 'Unable to import files.', 'error');
+    }
   };
 
   return (
@@ -105,20 +151,45 @@ export default function FileExplorer() {
             <Upload size={12} />
           </button>
           <button
+            onClick={() => folderInputRef.current?.click()}
+            title="Import folder"
+            className="p-1 text-muted hover:text-white transition-colors rounded"
+          >
+            <FolderOpen size={12} />
+          </button>
+          <button
             onClick={() => setAdding(true)}
             title="New file"
             className="p-1 text-muted hover:text-white transition-colors rounded"
           >
             <FilePlus size={12} />
           </button>
+          {reactProject && (
+            <button
+              onClick={() => setAddingComponent(true)}
+              title="New component"
+              className="p-1 text-muted hover:text-white transition-colors rounded"
+            >
+              <Blocks size={12} />
+            </button>
+          )}
         </div>
         <input
           ref={fileInputRef}
           type="file"
           multiple
           className="hidden"
-          accept=".html,.htm,.css,.scss,.sass,.js,.jsx,.ts,.tsx,.json,.md,.txt,.xml,.svg"
-          onChange={handleImport}
+          accept=".html,.htm,.css,.scss,.sass,.js,.jsx,.ts,.tsx,.json,.md,.txt,.xml,.svg,.mjs,.cjs,.yml,.yaml,.env,.gitignore"
+          onChange={(event) => handleImport(event, 'files')}
+        />
+        <input
+          ref={folderInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          webkitdirectory=""
+          directory=""
+          onChange={(event) => handleImport(event, 'folder')}
         />
       </div>
 
@@ -193,6 +264,24 @@ export default function FileExplorer() {
               }}
               onBlur={handleAdd}
               placeholder="filename.js"
+              className="flex-1 bg-bg border border-border rounded px-1.5 py-0.5 text-xs text-white placeholder-muted focus:outline-none focus:border-white min-w-0"
+            />
+          </div>
+        )}
+
+        {addingComponent && (
+          <div className="flex items-center gap-2 px-2.5 py-1.5">
+            <Blocks size={13} className="text-violet-300 shrink-0" />
+            <input
+              ref={componentInputRef}
+              value={newComponentName}
+              onChange={e => setNewComponentName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') handleAddComponent();
+                if (e.key === 'Escape') { setAddingComponent(false); setNewComponentName(''); }
+              }}
+              onBlur={handleAddComponent}
+              placeholder="ComponentName"
               className="flex-1 bg-bg border border-border rounded px-1.5 py-0.5 text-xs text-white placeholder-muted focus:outline-none focus:border-white min-w-0"
             />
           </div>

@@ -5,21 +5,27 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 
-function getTerminalUrl() {
+function getTerminalUrl(workspaceId) {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host}/terminal`;
+  const url = new URL(`${protocol}//${window.location.host}/terminal`);
+  if (workspaceId) url.searchParams.set('workspaceId', workspaceId);
+  return url.toString();
 }
 
-export default function WebTerminal({ onClose, isMaximized, onToggleMaximize }) {
+export default function WebTerminal({ onClose, isMaximized, onToggleMaximize, workspaceId, files = [] }) {
   const containerRef = useRef(null);
   const termRef = useRef(null);
   const fitRef = useRef(null);
   const socketRef = useRef(null);
+  const disposedRef = useRef(false);
+  const connectRef = useRef(() => {});
   const [connectionState, setConnectionState] = useState('connecting');
   const [sessionInfo, setSessionInfo] = useState(null);
   const [authRequired, setAuthRequired] = useState(false);
   const [accessKey, setAccessKey] = useState(() => sessionStorage.getItem('terminal_access_key') || '');
   const [authError, setAuthError] = useState('');
+  const [syncState, setSyncState] = useState('idle');
+  const syncKeyRef = useRef('');
 
   const statusLabel = useMemo(() => {
     if (connectionState === 'open') return 'live';
@@ -29,6 +35,11 @@ export default function WebTerminal({ onClose, isMaximized, onToggleMaximize }) 
 
   useEffect(() => {
     if (!containerRef.current) return undefined;
+    disposedRef.current = false;
+    setConnectionState('connecting');
+    setSessionInfo(null);
+    setAuthRequired(false);
+    setAuthError('');
 
     const term = new XTerm({
       fontFamily: '"JetBrains Mono", "Fira Code", monospace',
@@ -66,10 +77,26 @@ export default function WebTerminal({ onClose, isMaximized, onToggleMaximize }) 
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon());
     term.open(containerRef.current);
+    term.focus();
     fitRef.current = fitAddon;
     termRef.current = term;
 
+    const safeSetState = (setter, value) => {
+      if (!disposedRef.current) setter(value);
+    };
+
+    const writeToTerminal = (message, mode = 'write') => {
+      if (disposedRef.current) return;
+      const currentTerm = termRef.current;
+      if (!currentTerm) return;
+      try {
+        if (mode === 'writeln') currentTerm.writeln(message);
+        else currentTerm.write(message);
+      } catch {}
+    };
+
     const sendResize = () => {
+      if (disposedRef.current) return;
       try {
         fitAddon.fit();
       } catch {
@@ -85,56 +112,111 @@ export default function WebTerminal({ onClose, isMaximized, onToggleMaximize }) 
       }
     };
 
-    const connect = () => {
-      setConnectionState('connecting');
-      const socket = new WebSocket(getTerminalUrl());
+    const closeSocket = ({ kill = false } = {}) => {
+      const currentSocket = socketRef.current;
+      socketRef.current = null;
+      if (!currentSocket) return;
+
+      currentSocket.onopen = null;
+      currentSocket.onmessage = null;
+      currentSocket.onerror = null;
+      currentSocket.onclose = null;
+
+      try {
+        if (kill && currentSocket.readyState === WebSocket.OPEN) {
+          currentSocket.send(JSON.stringify({ type: 'kill' }));
+        }
+      } catch {}
+
+      try {
+        currentSocket.close();
+      } catch {}
+    };
+
+    const connect = ({ resetTerminal = false } = {}) => {
+      if (disposedRef.current) return;
+
+      const currentSocket = socketRef.current;
+      if (currentSocket?.readyState === WebSocket.OPEN || currentSocket?.readyState === WebSocket.CONNECTING) {
+        return;
+      }
+
+      if (resetTerminal) {
+        try {
+          term.clear();
+        } catch {}
+        safeSetState(setSessionInfo, null);
+        safeSetState(setAuthRequired, false);
+        safeSetState(setAuthError, '');
+      }
+
+      safeSetState(setConnectionState, 'connecting');
+      const socket = new WebSocket(getTerminalUrl(workspaceId));
       socketRef.current = socket;
 
-      socket.addEventListener('open', () => {
-        setConnectionState('open');
+      socket.onopen = () => {
+        if (disposedRef.current || socketRef.current !== socket) return;
+        safeSetState(setConnectionState, 'open');
+        try {
+          term.focus();
+        } catch {}
         sendResize();
-      });
+      };
 
-      socket.addEventListener('message', (event) => {
+      socket.onmessage = (event) => {
+        if (disposedRef.current || socketRef.current !== socket) return;
         try {
           const message = JSON.parse(event.data);
           if (message.type === 'auth-required') {
-            setAuthRequired(true);
-            setConnectionState('connecting');
+            safeSetState(setAuthRequired, true);
+            safeSetState(setConnectionState, 'connecting');
           } else if (message.type === 'auth-failed') {
-            setAuthError(message.message || 'Terminal authentication failed.');
-            setAuthRequired(true);
+            safeSetState(setAuthError, message.message || 'Terminal authentication failed.');
+            safeSetState(setAuthRequired, true);
           } else if (message.type === 'ready') {
-            setSessionInfo(message);
-            setAuthRequired(false);
-            setAuthError('');
-            term.writeln('\x1b[1m\x1b[32mWebIDE Terminal\x1b[0m');
-            term.writeln(`\x1b[90mConnected to ${message.shell} in ${message.cwd}\x1b[0m`);
-            term.writeln('');
+            safeSetState(setSessionInfo, message);
+            safeSetState(setAuthRequired, false);
+            safeSetState(setAuthError, '');
+            writeToTerminal('\x1b[1m\x1b[32mWebIDE Terminal\x1b[0m', 'writeln');
+            writeToTerminal(`\x1b[90mConnected to ${message.shell} in ${message.cwd}\x1b[0m`, 'writeln');
+            writeToTerminal('', 'writeln');
             sendResize();
           } else if (message.type === 'output') {
-            term.write(message.data);
+            writeToTerminal(message.data);
           } else if (message.type === 'exit') {
-            term.writeln('');
-            term.writeln(`\x1b[31mShell exited (${message.exitCode ?? 'unknown'})\x1b[0m`);
-            setConnectionState('closed');
+            writeToTerminal('', 'writeln');
+            writeToTerminal(`\x1b[31mShell exited (${message.exitCode ?? 'unknown'})\x1b[0m`, 'writeln');
+            safeSetState(setConnectionState, 'closed');
           } else if (message.type === 'error') {
-            term.writeln(`\x1b[31m${message.message}\x1b[0m`);
+            writeToTerminal(`\x1b[31m${message.message}\x1b[0m`, 'writeln');
           }
         } catch {
-          term.writeln('\x1b[31mReceived malformed terminal payload.\x1b[0m');
+          writeToTerminal('\x1b[31mReceived malformed terminal payload.\x1b[0m', 'writeln');
         }
-      });
+      };
 
-      socket.addEventListener('close', () => {
-        setConnectionState('closed');
-      });
+      socket.onclose = () => {
+        if (socketRef.current !== socket) return;
+        socketRef.current = null;
+        safeSetState(setConnectionState, 'closed');
+      };
 
-      socket.addEventListener('error', () => {
-        setConnectionState('closed');
-        term.writeln('\x1b[31mUnable to connect to terminal backend.\x1b[0m');
-      });
+      socket.onerror = () => {
+        if (socketRef.current !== socket) return;
+        safeSetState(setConnectionState, 'closed');
+        writeToTerminal('\x1b[31mUnable to connect to terminal backend.\x1b[0m', 'writeln');
+      };
     };
+
+    connectRef.current = connect;
+
+    const handlePointerDown = () => {
+      try {
+        term.focus();
+      } catch {}
+    };
+
+    containerRef.current.addEventListener('mousedown', handlePointerDown);
 
     const dataDisposable = term.onData((data) => {
       const socket = socketRef.current;
@@ -154,74 +236,69 @@ export default function WebTerminal({ onClose, isMaximized, onToggleMaximize }) 
     resizeObserver.observe(containerRef.current);
 
     return () => {
+      disposedRef.current = true;
+      connectRef.current = () => {};
       dataDisposable.dispose();
       resizeObserver.disconnect();
-      const socket = socketRef.current;
-      if (socket?.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: 'kill' }));
-        socket.close();
-      }
+      containerRef.current?.removeEventListener('mousedown', handlePointerDown);
+      closeSocket({ kill: true });
+      socketRef.current = null;
+      fitRef.current = null;
+      termRef.current = null;
       term.dispose();
     };
-  }, []);
+  }, [workspaceId]);
+
+  useEffect(() => {
+    if (!workspaceId || files.length === 0) return;
+
+    const syncKey = JSON.stringify(files.map((file) => [file.name, file.content]));
+    if (syncKeyRef.current === syncKey) return;
+    syncKeyRef.current = syncKey;
+
+    let cancelled = false;
+
+    const syncWorkspace = async () => {
+      setSyncState('syncing');
+      try {
+        const response = await fetch('/api/workspaces/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId, files }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Unable to sync workspace for terminal.');
+        if (!cancelled) {
+          setSyncState('ready');
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setSyncState('error');
+          setAuthError(error.message || 'Unable to sync workspace for terminal.');
+        }
+      }
+    };
+
+    syncWorkspace();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId, files]);
 
   const reconnect = () => {
-    const term = termRef.current;
-    const socket = socketRef.current;
-    if (socket?.readyState === WebSocket.OPEN) return;
-    term?.clear();
+    if (disposedRef.current) return;
     setSessionInfo(null);
     setConnectionState('connecting');
     setAuthError('');
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const nextSocket = new WebSocket(`${protocol}//${window.location.host}/terminal`);
-    socketRef.current = nextSocket;
-
-    nextSocket.addEventListener('open', () => {
-      setConnectionState('open');
-      if (fitRef.current && term) {
-        fitRef.current.fit();
-        nextSocket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-      }
-    });
-
-    nextSocket.addEventListener('message', (event) => {
+    setAuthRequired(false);
+    const socket = socketRef.current;
+    if (socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) {
       try {
-        const message = JSON.parse(event.data);
-        if (message.type === 'auth-required') {
-          setAuthRequired(true);
-        } else if (message.type === 'auth-failed') {
-          setAuthError(message.message || 'Terminal authentication failed.');
-          setAuthRequired(true);
-        } else if (message.type === 'ready') {
-          setSessionInfo(message);
-          setAuthRequired(false);
-          setAuthError('');
-          term?.writeln('\x1b[1m\x1b[32mWebIDE Terminal\x1b[0m');
-          term?.writeln(`\x1b[90mConnected to ${message.shell} in ${message.cwd}\x1b[0m`);
-          term?.writeln('');
-        } else if (message.type === 'output') {
-          term?.write(message.data);
-        } else if (message.type === 'exit') {
-          term?.writeln(`\r\n\x1b[31mShell exited (${message.exitCode ?? 'unknown'})\x1b[0m`);
-          setConnectionState('closed');
-        } else if (message.type === 'error') {
-          term?.writeln(`\r\n\x1b[31m${message.message}\x1b[0m`);
-        }
-      } catch {
-        term?.writeln('\r\n\x1b[31mReceived malformed terminal payload.\x1b[0m');
-      }
-    });
-
-    nextSocket.addEventListener('close', () => {
-      setConnectionState('closed');
-    });
-
-    nextSocket.addEventListener('error', () => {
-      setConnectionState('closed');
-      term?.writeln('\r\n\x1b[31mUnable to reconnect to terminal backend.\x1b[0m');
-    });
+        socket.close();
+      } catch {}
+    }
+    connectRef.current({ resetTerminal: true });
   };
 
   const submitAccessKey = (event) => {
@@ -294,6 +371,8 @@ export default function WebTerminal({ onClose, isMaximized, onToggleMaximize }) 
           <Terminal size={12} />
           {authRequired
             ? 'Terminal access key required for this deployment.'
+            : syncState === 'syncing'
+            ? 'Syncing current project files into the local workspace...'
             : connectionState === 'connecting'
             ? 'Connecting to local shell backend...'
             : 'Terminal backend disconnected. Use reconnect after the server is running again.'}
@@ -327,6 +406,7 @@ export default function WebTerminal({ onClose, isMaximized, onToggleMaximize }) 
       <div
         ref={containerRef}
         className="flex-1 overflow-hidden"
+        tabIndex={0}
         style={{ padding: '4px 8px' }}
       />
     </div>
